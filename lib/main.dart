@@ -92,31 +92,34 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(horizontal: 28),
-                child: StackedCarousel(
-                  controller: _controller,
-                  // autoPlay: false,
-                  autoPlayInterval: const Duration(seconds: 3),
-                  animationDuration: const Duration(milliseconds: 650),
-                  cardWidthFactor: 0.8,
-                  cardHeight: 350,
-                  isDotIndicatorEnabled: false,
-                  cardAlignment: CrossAxisAlignment.start,
-                  peekOffsetY: 12,
-                  peekOffsetX: 80,
-                  flyDirection: FlyDirection.up,
-                  peekTiltAngle: 0.10,
-                  onCardTap: (index) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Tapped card $index — ${_cards[index].title}',
+                child: Directionality(
+                  textDirection: TextDirection.rtl,
+                  child: StackedCarousel(
+                    controller: _controller,
+                    // autoPlay: false,
+                    autoPlayInterval: const Duration(seconds: 3),
+                    animationDuration: const Duration(milliseconds: 650),
+                    cardWidthFactor: 0.8,
+                    cardHeight: 350,
+                    isDotIndicatorEnabled: false,
+                    cardAlignment: CrossAxisAlignment.start,
+                    peekOffsetY: 12,
+                    peekOffsetX: 80,
+                    flyDirection: FlyDirection.up,
+                    peekTiltAngle: 0.10,
+                    onCardTap: (index) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Tapped card $index — ${_cards[index].title}',
+                          ),
+                          duration: const Duration(seconds: 1),
+                          behavior: SnackBarBehavior.floating,
                         ),
-                        duration: const Duration(seconds: 1),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  },
-                  items: _cards.map((c) => _DemoCard(data: c)).toList(),
+                      );
+                    },
+                    items: _cards.map((c) => _DemoCard(data: c)).toList(),
+                  ),
                 ),
               ),
             ),
@@ -193,6 +196,7 @@ class _CtrlButton extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Sample card content
 // ─────────────────────────────────────────────────────────────────────────────
+
 class _CardData {
   const _CardData({
     required this.gradient,

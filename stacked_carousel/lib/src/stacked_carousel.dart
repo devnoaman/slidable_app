@@ -339,9 +339,16 @@ class _StackedCarouselState extends State<StackedCarousel>
 
   /// Builds the two animated card widgets in the correct Z order.
   ///
+  /// [dirFactor] is +1.0 for LTR and -1.0 for RTL. It mirrors the X offset
+  /// and tilt of the peek card so the stack looks natural in both directions.
+  ///
   /// Forward → peek card behind (Z=0), current card on top (Z=1).
   /// Reverse → current card behind (Z=0), incoming previous card on top (Z=1).
-  List<Widget> _buildCardLayers(double cardWidth, double cardHeight) {
+  List<Widget> _buildCardLayers(
+    double cardWidth,
+    double cardHeight,
+    double dirFactor,
+  ) {
     Widget tappable(Widget card, int index) {
       final cb = widget.onCardTap;
       if (cb == null) return card;
@@ -359,14 +366,15 @@ class _StackedCarouselState extends State<StackedCarousel>
               return Positioned(
                 top: _riseOffsetY.value,
                 child: Opacity(
-                  // During the rise animation the fade controller is already at
-                  // 1.0, so this only affects the idle appearance of new cards.
                   opacity: _peekFadeController.value,
                   child: Transform.translate(
-                    offset: Offset(_riseOffsetX.value, 0),
+                    // Mirror X offset for RTL.
+                    offset: Offset(_riseOffsetX.value * dirFactor, 0),
                     child: Transform(
                       alignment: Alignment.bottomCenter,
-                      transform: Matrix4.identity()..rotateZ(_riseTilt.value),
+                      // Mirror tilt for RTL.
+                      transform: Matrix4.identity()
+                        ..rotateZ(_riseTilt.value * dirFactor),
                       child: Transform.scale(
                         scale: _riseScale.value,
                         child: SizedBox(
@@ -412,30 +420,45 @@ class _StackedCarouselState extends State<StackedCarousel>
 
   @override
   Widget build(BuildContext context) {
+    final isRTL = Directionality.of(context) == TextDirection.rtl;
+    // +1 for LTR, -1 for RTL — mirrors X offsets and tilt.
+    final dirFactor = isRTL ? -1.0 : 1.0;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final cardWidth = constraints.maxWidth * widget.cardWidthFactor;
         final cardHeight = widget.cardHeight;
+
+        // Resolve start alignment to the correct physical side.
+        final Alignment stackAlignment;
+        if (widget.cardAlignment == CrossAxisAlignment.center) {
+          stackAlignment = Alignment.topCenter;
+        } else {
+          // CrossAxisAlignment.start — topLeft in LTR, topRight in RTL.
+          stackAlignment = isRTL ? Alignment.topRight : Alignment.topLeft;
+        }
 
         return SizedBox(
           width: constraints.maxWidth,
           height: cardHeight + widget.peekOffsetY + 16,
           child: GestureDetector(
             onHorizontalDragEnd: (details) {
-              final velocity = details.primaryVelocity ?? 0;
-              if (velocity < -widget.swipeThreshold) {
+              // Multiply raw velocity by dirFactor so the intuitive swipe
+              // direction stays consistent with reading direction:
+              //   LTR: swipe left  (v < 0) → next,  swipe right (v > 0) → prev
+              //   RTL: swipe right (v > 0) → next,  swipe left  (v < 0) → prev
+              final v = (details.primaryVelocity ?? 0) * dirFactor;
+              if (v < -widget.swipeThreshold) {
                 _advance();
-              } else if (velocity > widget.swipeThreshold) {
+              } else if (v > widget.swipeThreshold) {
                 _retreat();
               }
             },
             child: Stack(
-              alignment: widget.cardAlignment == CrossAxisAlignment.start
-                  ? Alignment.topLeft
-                  : Alignment.topCenter,
+              alignment: stackAlignment,
               clipBehavior: Clip.none,
               children: [
-                ..._buildCardLayers(cardWidth, cardHeight),
+                ..._buildCardLayers(cardWidth, cardHeight, dirFactor),
                 if (widget.isDotIndicatorEnabled)
                   Positioned(
                     bottom: 0,
