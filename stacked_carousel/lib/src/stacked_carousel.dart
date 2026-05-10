@@ -69,6 +69,7 @@ class StackedCarousel extends StatefulWidget {
     this.swipeThreshold = 300.0,
     this.autoPlay = true,
     this.isDotIndicatorEnabled = true,
+    this.visibleCount = 3,
   });
 
   /// Optional external controller — use it to call [next], [previous], [jumpTo].
@@ -120,6 +121,9 @@ class StackedCarousel extends StatefulWidget {
   /// Whether the dot indicator is visible.
   final bool isDotIndicatorEnabled;
 
+  /// The maximum number of cards visible in the stack at once.
+  final int visibleCount;
+
   @override
   State<StackedCarousel> createState() => _StackedCarouselState();
 }
@@ -142,10 +146,6 @@ class _StackedCarouselState extends State<StackedCarousel>
   late Animation<double> _riseTilt;
   late Animation<double> _riseScale;
 
-  /// Short fade-in controller for the NEW peek card that appears after
-  /// each transition. Starts at 1.0 so the first render is immediately visible.
-  late AnimationController _peekFadeController;
-
   @override
   void initState() {
     super.initState();
@@ -158,11 +158,6 @@ class _StackedCarouselState extends State<StackedCarousel>
     _riseController = AnimationController(
       vsync: this,
       duration: widget.animationDuration,
-    );
-    _peekFadeController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 250),
-      value: 1.0, // first render: peek card is immediately visible
     );
 
     _buildTweens();
@@ -261,7 +256,6 @@ class _StackedCarouselState extends State<StackedCarousel>
     _timer?.cancel();
     _flyController.dispose();
     _riseController.dispose();
-    _peekFadeController.dispose();
     super.dispose();
   }
 
@@ -292,8 +286,6 @@ class _StackedCarouselState extends State<StackedCarousel>
     _flyController.reset();
     _riseController.reset();
     _isAnimating = false;
-    // Fade in the new peek card.
-    _peekFadeController.forward(from: 0);
   }
 
   Future<void> _retreat() async {
@@ -319,8 +311,6 @@ class _StackedCarouselState extends State<StackedCarousel>
     _flyController.reset();
     _riseController.reset();
     _isAnimating = false;
-    // Fade in the new peek card.
-    _peekFadeController.forward(from: 0);
   }
 
   void _jumpTo(int index) {
@@ -359,61 +349,142 @@ class _StackedCarouselState extends State<StackedCarousel>
       );
     }
 
-    final Widget peekCard = widget.items.length > 1
-        ? AnimatedBuilder(
-            animation: Listenable.merge([_riseController, _peekFadeController]),
+    final int n = widget.items.length;
+    if (n == 0) return [];
+    if (n == 1) {
+      return [tappable(_CardShell(child: widget.items[0]), 0)];
+    }
+
+    final int peekCount = (widget.visibleCount - 1).clamp(1, n - 1);
+    final List<Widget> layers = [];
+
+    Widget buildCardState(int actualIndex, double effectiveI, double opacity) {
+      final offsetY = effectiveI * widget.peekOffsetY;
+      final offsetX = effectiveI * widget.peekOffsetX * dirFactor;
+      final tilt = effectiveI * widget.peekTiltAngle * dirFactor;
+      final scale = 1.0 - (0.07 * effectiveI);
+
+      Widget card = Transform.translate(
+        offset: Offset(offsetX, 0),
+        child: Transform(
+          alignment: Alignment.bottomCenter,
+          transform: Matrix4.identity()..rotateZ(tilt),
+          child: Transform.scale(
+            scale: scale,
+            child: SizedBox(
+              width: cardWidth,
+              height: cardHeight,
+              child: tappable(_CardShell(child: widget.items[actualIndex]), actualIndex),
+            ),
+          ),
+        ),
+      );
+
+      if (opacity < 1.0) {
+        card = Opacity(opacity: opacity, child: card);
+      }
+
+      return Positioned(
+        top: offsetY,
+        child: card,
+      );
+    }
+
+    if (!_isReversing) {
+      // Forward or rest animation
+      final int maxK = _isAnimating ? (peekCount + 1).clamp(1, n - 1) : peekCount;
+
+      for (int k = maxK; k >= 1; k--) {
+        int idx = (_currentIndex + k) % n;
+        layers.add(
+          AnimatedBuilder(
+            animation: _riseController,
             builder: (context, child) {
-              return Positioned(
-                top: _riseOffsetY.value,
+              final curveT = Curves.easeOutCubic.transform(_riseController.value);
+              final effectiveI = k - curveT;
+              
+              double opacity = 1.0;
+              if (k == peekCount + 1) {
+                 opacity = curveT;
+              }
+              
+              return buildCardState(idx, effectiveI, opacity);
+            },
+          ),
+        );
+      }
+
+      layers.add(
+        AnimatedBuilder(
+          animation: _flyController,
+          builder: (context, child) {
+            return Transform.translate(
+              offset: Offset(0, _flyOffsetY.value),
+              child: Transform.scale(
+                scale: _flyScale.value,
                 child: Opacity(
-                  opacity: _peekFadeController.value,
-                  child: Transform.translate(
-                    // Mirror X offset for RTL.
-                    offset: Offset(_riseOffsetX.value * dirFactor, 0),
-                    child: Transform(
-                      alignment: Alignment.bottomCenter,
-                      // Mirror tilt for RTL.
-                      transform: Matrix4.identity()
-                        ..rotateZ(_riseTilt.value * dirFactor),
-                      child: Transform.scale(
-                        scale: _riseScale.value,
-                        child: SizedBox(
-                            width: cardWidth, height: cardHeight, child: child),
-                      ),
+                  opacity: _flyOpacity.value,
+                  child: SizedBox(
+                    width: cardWidth,
+                    height: cardHeight,
+                    child: tappable(_CardShell(child: widget.items[_currentIndex]), _currentIndex),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    } else {
+      // Reverse animation
+      for (int k = peekCount; k >= 0; k--) {
+        int idx = (_currentIndex + k) % n;
+        layers.add(
+          AnimatedBuilder(
+            animation: _flyController,
+            builder: (context, child) {
+              final curveT = Curves.easeInCubic.transform(_flyController.value);
+              final effectiveI = k + curveT;
+              
+              double opacity = 1.0;
+              if (k == peekCount) {
+                 opacity = 1.0 - curveT;
+              }
+              
+              return buildCardState(idx, effectiveI, opacity);
+            },
+          ),
+        );
+      }
+
+      layers.add(
+        AnimatedBuilder(
+          animation: _riseController,
+          builder: (context, child) {
+            return Positioned(
+              top: _riseOffsetY.value,
+              child: Transform.translate(
+                offset: Offset(_riseOffsetX.value * dirFactor, 0),
+                child: Transform(
+                  alignment: Alignment.bottomCenter,
+                  transform: Matrix4.identity()..rotateZ(_riseTilt.value * dirFactor),
+                  child: Transform.scale(
+                    scale: _riseScale.value,
+                    child: SizedBox(
+                      width: cardWidth,
+                      height: cardHeight,
+                      child: tappable(_CardShell(child: widget.items[_nextIndex]), _nextIndex),
                     ),
                   ),
                 ),
-              );
-            },
-            child: tappable(
-              _CardShell(child: widget.items[_nextIndex]),
-              _nextIndex,
-            ),
-          )
-        : const SizedBox.shrink();
+              ),
+            );
+          },
+        ),
+      );
+    }
 
-    final Widget currentCard = AnimatedBuilder(
-      animation: _flyController,
-      builder: (context, child) {
-        return Transform.translate(
-          offset: Offset(0, _flyOffsetY.value),
-          child: Transform.scale(
-            scale: _flyScale.value,
-            child: Opacity(
-              opacity: _flyOpacity.value,
-              child:
-                  SizedBox(width: cardWidth, height: cardHeight, child: child),
-            ),
-          ),
-        );
-      },
-      child: tappable(
-        _CardShell(child: widget.items[_currentIndex]),
-        _currentIndex,
-      ),
-    );
-
-    return _isReversing ? [currentCard, peekCard] : [peekCard, currentCard];
+    return layers;
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -438,9 +509,11 @@ class _StackedCarouselState extends State<StackedCarousel>
           stackAlignment = isRTL ? Alignment.topRight : Alignment.topLeft;
         }
 
+        final int peekCount = (widget.visibleCount - 1).clamp(1, widget.items.length > 1 ? widget.items.length - 1 : 1);
+
         return SizedBox(
           width: constraints.maxWidth,
-          height: cardHeight + widget.peekOffsetY + 16,
+          height: cardHeight + (widget.peekOffsetY * peekCount) + 16,
           child: GestureDetector(
             onHorizontalDragEnd: (details) {
               // Multiply raw velocity by dirFactor so the intuitive swipe
