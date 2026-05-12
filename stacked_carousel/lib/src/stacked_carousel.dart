@@ -355,7 +355,10 @@ class _StackedCarouselState extends State<StackedCarousel>
       return [tappable(_CardShell(child: widget.items[0]), 0)];
     }
 
-    final int peekCount = (widget.visibleCount - 1).clamp(1, n - 1);
+    // Allow peekCount up to visibleCount-1 regardless of item count.
+    // Indices wrap via modulo, so with 2 items and visibleCount=3, the
+    // third stack slot simply shows the next item again (cycled).
+    final int peekCount = (widget.visibleCount - 1).clamp(1, widget.visibleCount - 1);
     final List<Widget> layers = [];
 
     Widget buildCardState(int actualIndex, double effectiveI, double opacity) {
@@ -392,7 +395,9 @@ class _StackedCarouselState extends State<StackedCarousel>
 
     if (!_isReversing) {
       // Forward or rest animation
-      final int maxK = _isAnimating ? (peekCount + 1).clamp(1, n - 1) : peekCount;
+      // During forward animation one extra ghost layer fades in from behind.
+      // No longer capped at n-1 so repeated items can fill the extra slot.
+      final int maxK = _isAnimating ? peekCount + 1 : peekCount;
 
       for (int k = maxK; k >= 1; k--) {
         int idx = (_currentIndex + k) % n;

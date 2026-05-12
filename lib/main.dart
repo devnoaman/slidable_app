@@ -107,7 +107,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     peekOffsetX: 80,
                     flyDirection: FlyDirection.up,
                     peekTiltAngle: 0.10,
-                    visibleCount: 3,
+                    visibleCount: 2,
                     onCardTap: (index) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
