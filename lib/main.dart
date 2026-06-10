@@ -101,13 +101,21 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     animationDuration: const Duration(milliseconds: 650),
                     cardWidthFactor: 0.8,
                     cardHeight: 350,
-                    isDotIndicatorEnabled: false,
+                    isDotIndicatorEnabled: true,
+
                     cardAlignment: CrossAxisAlignment.start,
                     peekOffsetY: 12,
                     peekOffsetX: 80,
-                    flyDirection: FlyDirection.up,
+                    flyDirection: FlyDirection.down,
                     peekTiltAngle: 0.10,
+                    reverseSwipeDirection: false,
+                    reverseOnBack: false,
                     visibleCount: 2,
+                    flyCurve: Easing.legacyAccelerate,
+                    dotIndicatorActiveColor: Colors.red,
+                    dotIndicatorInactiveColor: Colors.white,
+                    // dotIndicatorSize: 12,
+                    // dotIndicatorSpacing: 12,
                     onCardTap: (index) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
