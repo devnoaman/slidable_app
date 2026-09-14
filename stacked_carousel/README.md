@@ -9,14 +9,14 @@ A Flutter package providing an auto-animated stacked carousel widget where the n
 - 👆 **Swipe gestures** — swipe left for next, swipe right for previous (mirrored animation)
 - 🎮 **External controller** — `StackedCarouselController` with `next()`, `previous()`, `jumpTo(index)`
 - 🎯 **Tap callback** — `onCardTap(index)` fired per card (front & peek)
-- ↕️ **Fly direction** — choose whether the dismissed card flies up or down
+- ↕️ **Fly direction** — dismissed cards can fly up, down, left, right, or diagonally — or `start` / `end` to follow `Directionality`
 - 📐 **Full layout control** — independent `cardWidthFactor`, `cardHeight`, and `cardAlignment`
 
 ## Getting started
 
 ```yaml
 dependencies:
-  stacked_carousel: ^1.0.0
+  stacked_carousel: ^1.1.0
 ```
 
 ## Usage
@@ -49,7 +49,7 @@ StackedCarousel(
   peekOffsetY: 20,             // peek card 20 px below
   peekOffsetX: 30,             // peek card 30 px to the right
   peekTiltAngle: 0.10,         // tilt in radians
-  flyDirection: FlyDirection.down,
+  flyDirection: FlyDirection.end, // start/end follow Directionality; left/right are physical
   swipeThreshold: 300,         // px/s to trigger swipe
   autoPlay: true,
   autoPlayInterval: const Duration(seconds: 4),
@@ -76,7 +76,7 @@ print(_controller.currentIndex);
 | `peekOffsetY` | `double` | `28` | Peek card Y offset in px |
 | `peekOffsetX` | `double` | `0` | Peek card X offset in px |
 | `peekTiltAngle` | `double` | `0.12` | Peek card tilt in radians |
-| `flyDirection` | `FlyDirection` | `.up` | Dismissed card fly direction |
+| `flyDirection` | `FlyDirection` | `.up` | Dismissed card fly direction. `start` / `end` follow `Directionality` |
 | `swipeThreshold` | `double` | `300` | Min swipe velocity in px/s |
 | `autoPlay` | `bool` | `true` | Auto-advance on timer |
 | `autoPlayInterval` | `Duration` | `3s` | Interval between advances |

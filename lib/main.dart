@@ -28,6 +28,8 @@ class CarouselDemoPage extends StatefulWidget {
 
 class _CarouselDemoPageState extends State<CarouselDemoPage> {
   final _controller = StackedCarouselController();
+  FlyDirection _flyDirection = FlyDirection.end;
+  TextDirection _textDirection = TextDirection.rtl;
 
   static const _cards = [
     _CardData(
@@ -93,7 +95,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(horizontal: 28),
                 child: Directionality(
-                  textDirection: TextDirection.rtl,
+                  textDirection: _textDirection,
                   child: StackedCarousel(
                     controller: _controller,
                     // autoPlay: false,
@@ -106,7 +108,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     cardAlignment: CrossAxisAlignment.start,
                     peekOffsetY: 12,
                     peekOffsetX: 80,
-                    flyDirection: FlyDirection.down,
+                    flyDirection: _flyDirection,
                     peekTiltAngle: 0.10,
                     reverseSwipeDirection: false,
                     reverseOnBack: false,
@@ -130,6 +132,87 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     items: _cards.map((c) => _DemoCard(data: c)).toList(),
                   ),
                 ),
+              ),
+            ),
+            // ── Fly direction ──────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      _textDirection = _textDirection == TextDirection.rtl
+                          ? TextDirection.ltr
+                          : TextDirection.rtl;
+                    }),
+                    child: Container(
+                      height: 36,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white54),
+                      ),
+                      child: Text(
+                        _textDirection == TextDirection.rtl ? 'RTL' : 'LTR',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: SizedBox(
+                      height: 36,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: FlyDirection.values.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 8),
+                        itemBuilder: (context, i) {
+                          final direction = FlyDirection.values[i];
+                          final selected = direction == _flyDirection;
+                          return GestureDetector(
+                            onTap: () =>
+                                setState(() => _flyDirection = direction),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? Colors.white.withValues(alpha: 0.18)
+                                    : Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: selected
+                                      ? Colors.white54
+                                      : Colors.white24,
+                                ),
+                              ),
+                              child: Text(
+                                direction.name,
+                                style: TextStyle(
+                                  color: selected
+                                      ? Colors.white
+                                      : Colors.white54,
+                                  fontSize: 12,
+                                  fontWeight: selected
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             // ── Controller buttons ──────────────────────────────────────────
@@ -192,7 +275,7 @@ class _CtrlButton extends StatelessWidget {
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.08),
+          color: Colors.white.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: Colors.white24, width: 1),
         ),
@@ -239,17 +322,26 @@ class _DemoCard extends StatelessWidget {
           Positioned(
             top: -40,
             right: -40,
-            child: _Circle(size: 180, color: Colors.white.withOpacity(0.08)),
+            child: _Circle(
+              size: 180,
+              color: Colors.white.withValues(alpha: 0.08),
+            ),
           ),
           Positioned(
             bottom: 60,
             left: -30,
-            child: _Circle(size: 140, color: Colors.white.withOpacity(0.06)),
+            child: _Circle(
+              size: 140,
+              color: Colors.white.withValues(alpha: 0.06),
+            ),
           ),
           Positioned(
             bottom: -20,
             right: 40,
-            child: _Circle(size: 100, color: Colors.white.withOpacity(0.05)),
+            child: _Circle(
+              size: 100,
+              color: Colors.white.withValues(alpha: 0.05),
+            ),
           ),
 
           // Content
@@ -274,7 +366,7 @@ class _DemoCard extends StatelessWidget {
                 Text(
                   data.subtitle,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 16,
                   ),
                 ),
@@ -286,10 +378,10 @@ class _DemoCard extends StatelessWidget {
                     vertical: 10,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
+                    color: Colors.white.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(100),
                     border: Border.all(
-                      color: Colors.white.withOpacity(0.3),
+                      color: Colors.white.withValues(alpha: 0.3),
                       width: 1,
                     ),
                   ),

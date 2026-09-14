@@ -3,7 +3,7 @@ description: >
   An auto-animated stacked carousel for Flutter where the next card peeks
   from behind the current one, slightly tilted. Supports swipe gestures,
   external controller, tap callbacks, and full layout customisation.
-version: 1.0.0
+version: 1.1.0
 homepage: https://github.com/noaman/stacked_carousel
 
 environment:

@@ -6,7 +6,90 @@ import 'package:flutter/physics.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 /// Which direction the front card flies when it is dismissed.
-enum FlyDirection { up, down }
+///
+/// Vertical values (`up`, `down`) travel [StackedCarousel.flyExitOffsetY]
+/// pixels, with optional [StackedCarousel.flyExitOffsetX] horizontal drift.
+///
+/// Physical values (`left`, `right`, and their diagonals) always travel
+/// toward that screen edge.
+///
+/// Directional values (`start`, `end`, and their diagonals) follow
+/// [Directionality]: `start` is left in LTR and right in RTL. Pair
+/// [FlyDirection.end] with [CrossAxisAlignment.start] so a stack that sits
+/// on the start edge dismisses cards toward the end edge.
+///
+/// Horizontal travel uses [StackedCarousel.flyExitOffsetX]. If it is `0`
+/// (the default), [StackedCarousel.flyExitOffsetY] is used so those
+/// directions work with the default constructor values.
+enum FlyDirection {
+  up,
+  down,
+  left,
+  right,
+  start,
+  end,
+  upLeft,
+  upRight,
+  downLeft,
+  downRight,
+  upStart,
+  upEnd,
+  downStart,
+  downEnd;
+
+  /// Maps logical start/end values to physical left/right for [textDirection].
+  FlyDirection resolve(TextDirection textDirection) {
+    final rtl = textDirection == TextDirection.rtl;
+    return switch (this) {
+      FlyDirection.start => rtl ? FlyDirection.right : FlyDirection.left,
+      FlyDirection.end => rtl ? FlyDirection.left : FlyDirection.right,
+      FlyDirection.upStart => rtl ? FlyDirection.upRight : FlyDirection.upLeft,
+      FlyDirection.upEnd => rtl ? FlyDirection.upLeft : FlyDirection.upRight,
+      FlyDirection.downStart =>
+        rtl ? FlyDirection.downRight : FlyDirection.downLeft,
+      FlyDirection.downEnd =>
+        rtl ? FlyDirection.downLeft : FlyDirection.downRight,
+      _ => this,
+    };
+  }
+
+  /// Exit translation for a card dismissed in this direction.
+  Offset resolveExitOffset({
+    required double offsetX,
+    required double offsetY,
+    TextDirection textDirection = TextDirection.ltr,
+  }) {
+    // Horizontal travel falls back to the Y magnitude so left/right/diagonals
+    // work when [offsetX] is left at its default of 0.
+    final hx = offsetX != 0.0 ? offsetX.abs() : offsetY;
+    switch (resolve(textDirection)) {
+      case FlyDirection.up:
+        return Offset(offsetX, -offsetY);
+      case FlyDirection.down:
+        return Offset(offsetX, offsetY);
+      case FlyDirection.left:
+        return Offset(-hx, 0);
+      case FlyDirection.right:
+        return Offset(hx, 0);
+      case FlyDirection.upLeft:
+        return Offset(-hx, -offsetY);
+      case FlyDirection.upRight:
+        return Offset(hx, -offsetY);
+      case FlyDirection.downLeft:
+        return Offset(-hx, offsetY);
+      case FlyDirection.downRight:
+        return Offset(hx, offsetY);
+      case FlyDirection.start:
+      case FlyDirection.end:
+      case FlyDirection.upStart:
+      case FlyDirection.upEnd:
+      case FlyDirection.downStart:
+      case FlyDirection.downEnd:
+        // Unreachable — [resolve] always returns a physical direction.
+        return Offset.zero;
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // StackedCarouselController
@@ -161,13 +244,21 @@ class StackedCarousel extends StatefulWidget {
   final double peekOffsetY;
 
   /// How many pixels the peek card is offset on the X-axis.
-  /// Positive = right, negative = left.
+  /// Positive = toward [Directionality] end (right in LTR, left in RTL).
+  /// Negative = toward start.
   final double peekOffsetX;
 
   /// Tilt angle of the peeking card in radians.
   final double peekTiltAngle;
 
   /// Direction the front card flies when dismissed.
+  ///
+  /// Use [FlyDirection.start] / [FlyDirection.end] to follow [Directionality]:
+  /// a card that sits on the start edge flies toward the end edge, and the
+  /// mapping flips automatically in RTL.
+  ///
+  /// See [FlyDirection] for vertical, horizontal, diagonal, and directional
+  /// options.
   final FlyDirection flyDirection;
 
   /// Minimum horizontal swipe velocity (px/s) to trigger navigation.
@@ -221,10 +312,17 @@ class StackedCarousel extends StatefulWidget {
 
   // ── Exit offsets ──────────────────────────────────────────────────────────
 
-  /// How far (px) the card travels on Y during exit. Default 500.
+  /// How far (px) the card travels on Y during a vertical or diagonal exit.
+  /// Also used as the horizontal travel distance when [flyExitOffsetX] is `0`.
+  /// Default 500.
   final double flyExitOffsetY;
 
-  /// How far (px) the card drifts on X during exit. Default 0 (straight up/down).
+  /// How far (px) the card travels on X during exit.
+  ///
+  /// For [FlyDirection.up] / [FlyDirection.down] this is optional horizontal
+  /// drift (default `0` = straight).
+  /// For horizontal and diagonal directions this is the primary X travel
+  /// distance; when `0`, [flyExitOffsetY] is used instead.
   final double flyExitOffsetX;
 
   // ── Animation curves ──────────────────────────────────────────────────────
@@ -314,6 +412,7 @@ class _StackedCarouselState extends State<StackedCarousel>
   // Set from build() so drag handlers can read it without a BuildContext.
   double _dirFactor = 1.0;
   double _cardWidth = 300.0;
+  TextDirection _textDirection = TextDirection.ltr;
 
   // ── Auto-play pause / resume ──────────────────────────────────────────────
   Timer? _resumeTimer;
@@ -348,17 +447,31 @@ class _StackedCarouselState extends State<StackedCarousel>
     }
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = Directionality.of(context);
+    if (next == _textDirection) return;
+    _textDirection = next;
+    if (!_isAnimating && !_isDragging) {
+      _buildTweens();
+    }
+  }
+
   // ── Tween builders ────────────────────────────────────────────────────────
 
   /// Forward tweens — current card flies away, next card rises from peek.
   void _buildTweens() {
-    final double flySign = widget.flyDirection == FlyDirection.up ? -1.0 : 1.0;
+    final exit = widget.flyDirection.resolveExitOffset(
+      offsetX: widget.flyExitOffsetX,
+      offsetY: widget.flyExitOffsetY,
+      textDirection: _textDirection,
+    );
 
-    _flyOffsetY =
-        Tween<double>(begin: 0, end: flySign * widget.flyExitOffsetY).animate(
+    _flyOffsetY = Tween<double>(begin: 0, end: exit.dy).animate(
       CurvedAnimation(parent: _flyController, curve: widget.flyCurve),
     );
-    _flyOffsetX = Tween<double>(begin: 0, end: widget.flyExitOffsetX).animate(
+    _flyOffsetX = Tween<double>(begin: 0, end: exit.dx).animate(
       CurvedAnimation(parent: _flyController, curve: widget.flyCurve),
     );
     _flyOpacity = Tween<double>(begin: 1, end: 0).animate(

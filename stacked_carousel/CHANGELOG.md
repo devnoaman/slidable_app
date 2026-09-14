@@ -1,3 +1,7 @@
+## 1.1.0
+
+* `FlyDirection` now supports `left`, `right`, diagonals, and directional `start` / `end` values that follow `Directionality` (RTL flips them). Horizontal travel falls back to `flyExitOffsetY` when `flyExitOffsetX` is `0`.
+
 ## 1.0.0
 
 * Initial release.
