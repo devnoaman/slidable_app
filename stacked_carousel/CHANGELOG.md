@@ -1,6 +1,7 @@
 ## 1.1.0
 
 * `FlyDirection` now supports `left`, `right`, diagonals, and directional `start` / `end` values that follow `Directionality` (RTL flips them). Horizontal travel falls back to `flyExitOffsetY` when `flyExitOffsetX` is `0`.
+* Swipe tracking is 1:1 with the finger; release uses Flutter's scroll spring (fling + snap). Drag can catch an in-flight card.
 
 ## 1.0.0
 

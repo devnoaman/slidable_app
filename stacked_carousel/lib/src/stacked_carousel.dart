@@ -1,8 +1,10 @@
 // ignore_for_file: library_private_types_in_public_api
 
 import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 /// Which direction the front card flies when it is dismissed.
@@ -169,7 +171,7 @@ class StackedCarousel extends StatefulWidget {
     this.cardHeight = 420.0,
     this.cardAlignment = CrossAxisAlignment.center,
     this.flyDirection = FlyDirection.up,
-    this.swipeThreshold = 300.0,
+    this.swipeThreshold = 200.0,
     this.autoPlay = true,
     this.isDotIndicatorEnabled = true,
     this.visibleCount = 3,
@@ -214,7 +216,10 @@ class StackedCarousel extends StatefulWidget {
   /// Optional external controller — use it to call [next], [previous], [jumpTo].
   final StackedCarouselController? controller;
 
-  /// Called when a card is tapped, with the tapped card's index.
+  /// Called when a card is tapped, with that card's index.
+  ///
+  /// Both the front card and any visible peek card behind it are tappable.
+  /// Where they overlap, the topmost card wins.
   final ValueChanged<int>? onCardTap;
 
   /// Fired whenever the active index changes (advance, retreat, or jumpTo).
@@ -261,8 +266,8 @@ class StackedCarousel extends StatefulWidget {
   /// options.
   final FlyDirection flyDirection;
 
-  /// Minimum horizontal swipe velocity (px/s) to trigger navigation.
-  /// Lower = more sensitive. Defaults to 300.
+  /// Minimum swipe velocity (px/s) that commits on release, like a fling.
+  /// Lower = more sensitive. Defaults to 200.
   final double swipeThreshold;
 
   /// Whether the carousel auto-advances on a timer.
@@ -274,7 +279,11 @@ class StackedCarousel extends StatefulWidget {
   /// The maximum number of cards visible in the stack at once.
   final int visibleCount;
 
-  /// Whether the carousel wraps at the ends. Set `false` for bounded flows.
+  /// Whether the carousel wraps at the ends.
+  ///
+  /// `true` (default) — the same item list is reused: after the last card
+  /// comes the first, without duplicating items in memory.
+  /// `false` — a bounded list stops on the last item and rubber-bands.
   final bool loop;
 
   /// The index of the card shown on first render. Clamped to valid range.
@@ -285,7 +294,8 @@ class StackedCarousel extends StatefulWidget {
   /// Whether dragging the card scrubs the animation interactively.
   final bool dragEnabled;
 
-  /// Fraction of card width to drag before a release commits the transition.
+  /// Fraction of travel (see drag extent) at which a release commits.
+  /// Combined with [swipeThreshold] so a short, fast fling still advances.
   final double dragCommitThreshold;
 
   /// Reverses which swipe direction advances vs retreats.
@@ -305,9 +315,9 @@ class StackedCarousel extends StatefulWidget {
   ///   the current card sinks into the peek slot while the previous card
   ///   slides in from above.
   ///
-  /// `false` — back uses the same **fly-away** animation as forward:
-  ///   the current card flies off-screen exactly like a forward advance,
-  ///   but the index goes backward. Use this for a uniform carousel feel.
+  /// `false` — back **rewinds** the forward dismiss: the card that flew off
+  ///   swipes back in from the same [flyDirection] edge, and the current
+  ///   card sinks into the peek slot.
   final bool reverseOnBack;
 
   // ── Exit offsets ──────────────────────────────────────────────────────────
@@ -382,14 +392,60 @@ class _StackedCarouselState extends State<StackedCarousel>
   late int _currentIndex;
   bool _isAnimating = false;
   bool _isReversing = false;
+  /// True when back uses a rewind: the dismissed card flies back in from
+  /// [FlyDirection], while the current card sinks into the peek slot.
+  bool _goingBackward = false;
   Timer? _timer;
 
   // ── Reactive index ────────────────────────────────────────────────────────
   late final ValueNotifier<int> _indexNotifier;
+  /// Rebuilds stack layers without replacing the GestureDetector.
+  final ValueNotifier<int> _layersTick = ValueNotifier(0);
+  void _refreshLayers() => _layersTick.value++;
+
+  int _cycleIndex(int i) {
+    final n = widget.items.length;
+    if (n <= 0) return 0;
+    return (i % n + n) % n;
+  }
+
+  /// Peek / neighbour index, or `null` when [loop] is off and [offset] is
+  /// outside the generated list.
+  int? _indexAtOffset(int offset) {
+    final i = _currentIndex + offset;
+    if (widget.loop) return _cycleIndex(i);
+    if (i < 0 || i >= widget.items.length) return null;
+    return i;
+  }
 
   // ── Bounds helpers ────────────────────────────────────────────────────────
   bool get _canGoNext => widget.loop || _currentIndex < widget.items.length - 1;
   bool get _canGoPrevious => widget.loop || _currentIndex > 0;
+
+  Offset get _exitOffset => widget.flyDirection.resolveExitOffset(
+        offsetX: widget.flyExitOffsetX,
+        offsetY: widget.flyExitOffsetY,
+        textDirection: _textDirection,
+      );
+
+  /// Pixel distance that maps 1:1 onto the 0–1 animation so the front card
+  /// tracks the finger instead of racing ahead along a longer fly path.
+  double get _dragExtent {
+    final exit = _exitOffset;
+    final travel = math.max(exit.dx.abs(), exit.dy.abs());
+    final floor = _cardWidth <= 1 ? 1.0 : _cardWidth * 0.5;
+    return math.max(travel, floor);
+  }
+
+  /// Snappier than ScrollPhysics default so the next card is ready sooner.
+  static final SpringDescription _kSettleSpring =
+      SpringDescription.withDampingRatio(
+    mass: 0.4,
+    stiffness: 240.0,
+    ratio: 1.05,
+  );
+
+  int _motionEpoch = 0;
 
   // ── Animation controllers ─────────────────────────────────────────────────
   late AnimationController _flyController;
@@ -408,7 +464,19 @@ class _StackedCarouselState extends State<StackedCarousel>
   bool _isDragging = false;
   bool _dragDirectionDetermined = false;
   bool _dragDirectionForward = true;
+  bool _pendingCommit = false;
+  bool _pendingForward = true;
   double _accumulatedDragX = 0;
+  int? _activePointer;
+  Offset? _downPosition;
+  VelocityTracker? _velocityTracker;
+  bool _pointerMoved = false;
+  bool _swipeStartReported = false;
+  int? _pressedCardIndex;
+  bool _signalGesture = false;
+  Offset _signalPosition = Offset.zero;
+  Timer? _scrollEndTimer;
+  DateTime? _ignoreScrollUntil;
   // Set from build() so drag handlers can read it without a BuildContext.
   double _dirFactor = 1.0;
   double _cardWidth = 300.0;
@@ -421,6 +489,25 @@ class _StackedCarouselState extends State<StackedCarousel>
   void _notifyIndexChange() {
     _indexNotifier.value = _currentIndex;
     widget.onIndexChanged?.call(_currentIndex);
+  }
+
+  void _commitIndex(bool forward) {
+    if (widget.items.isEmpty) return;
+    if (forward) {
+      if (!_canGoNext) return;
+      _currentIndex = widget.loop
+          ? (_currentIndex + 1) % widget.items.length
+          : _currentIndex + 1;
+    } else {
+      if (!_canGoPrevious) return;
+      _currentIndex = widget.loop
+          ? (_currentIndex - 1 + widget.items.length) % widget.items.length
+          : _currentIndex - 1;
+    }
+    _isReversing = false;
+    _goingBackward = false;
+    _pendingCommit = false;
+    _notifyIndexChange();
   }
 
   @override
@@ -461,74 +548,109 @@ class _StackedCarouselState extends State<StackedCarousel>
   // ── Tween builders ────────────────────────────────────────────────────────
 
   /// Forward tweens — current card flies away, next card rises from peek.
-  void _buildTweens() {
-    final exit = widget.flyDirection.resolveExitOffset(
-      offsetX: widget.flyExitOffsetX,
-      offsetY: widget.flyExitOffsetY,
-      textDirection: _textDirection,
-    );
+  ///
+  /// [scrubbing] uses linear curves so the card tracks the finger. Easing is
+  /// reserved for timer/button advances; combining it with a spring makes
+  /// swipes feel laggy and disconnected.
+  void _buildTweens({bool scrubbing = false}) {
+    final exit = _exitOffset;
+    final flyCurve = scrubbing ? Curves.linear : widget.flyCurve;
+    final riseCurve = scrubbing ? Curves.linear : widget.riseCurve;
+    final scaleCurve = scrubbing ? Curves.linear : widget.flyScaleCurve;
+    final Curve opacityCurve = scrubbing
+        ? Curves.linear
+        : Interval(
+            widget.flyOpacityInterval.begin,
+            widget.flyOpacityInterval.end,
+            curve: widget.flyOpacityCurve,
+          );
 
     _flyOffsetY = Tween<double>(begin: 0, end: exit.dy).animate(
-      CurvedAnimation(parent: _flyController, curve: widget.flyCurve),
+      CurvedAnimation(parent: _flyController, curve: flyCurve),
     );
     _flyOffsetX = Tween<double>(begin: 0, end: exit.dx).animate(
-      CurvedAnimation(parent: _flyController, curve: widget.flyCurve),
+      CurvedAnimation(parent: _flyController, curve: flyCurve),
     );
     _flyOpacity = Tween<double>(begin: 1, end: 0).animate(
-      CurvedAnimation(
-        parent: _flyController,
-        curve: Interval(
-          widget.flyOpacityInterval.begin,
-          widget.flyOpacityInterval.end,
-          curve: widget.flyOpacityCurve,
-        ),
-      ),
+      CurvedAnimation(parent: _flyController, curve: opacityCurve),
     );
     _flyScale = Tween<double>(begin: 1.0, end: 0.85).animate(
-      CurvedAnimation(parent: _flyController, curve: widget.flyScaleCurve),
+      CurvedAnimation(parent: _flyController, curve: scaleCurve),
     );
 
     _riseOffsetY = Tween<double>(begin: widget.peekOffsetY, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.riseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseOffsetX = Tween<double>(begin: widget.peekOffsetX, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.riseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseTilt = Tween<double>(begin: widget.peekTiltAngle, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.riseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseScale = Tween<double>(begin: 0.93, end: 1.0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.riseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
   }
 
   /// Reverse tweens — current card sinks to peek, previous card slides in from above.
-  void _buildReverseTweens() {
+  void _buildReverseTweens({bool scrubbing = false}) {
+    final sinkCurve =
+        scrubbing ? Curves.linear : widget.reverseSinkCurve;
+    final riseCurve =
+        scrubbing ? Curves.linear : widget.reverseRiseCurve;
+
     _flyOffsetY = Tween<double>(begin: 0, end: widget.peekOffsetY).animate(
-      CurvedAnimation(parent: _flyController, curve: widget.reverseSinkCurve),
+      CurvedAnimation(parent: _flyController, curve: sinkCurve),
     );
     _flyOffsetX = Tween<double>(begin: 0, end: 0).animate(_flyController);
     _flyOpacity = Tween<double>(begin: 1, end: 1).animate(_flyController);
     _flyScale = Tween<double>(begin: 1.0, end: 0.93).animate(
-      CurvedAnimation(parent: _flyController, curve: widget.reverseSinkCurve),
+      CurvedAnimation(parent: _flyController, curve: sinkCurve),
     );
 
     _riseOffsetY =
         Tween<double>(begin: -widget.peekOffsetY * 3, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.reverseRiseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseOffsetX = Tween<double>(begin: -widget.peekOffsetX, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.reverseRiseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseTilt = Tween<double>(begin: -widget.peekTiltAngle, end: 0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.reverseRiseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
     _riseScale = Tween<double>(begin: 0.93, end: 1.0).animate(
-      CurvedAnimation(parent: _riseController, curve: widget.reverseRiseCurve),
+      CurvedAnimation(parent: _riseController, curve: riseCurve),
     );
   }
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
+  /// Rewind of a forward dismiss: the previous card flies back in from the
+  /// same edge it left, and the current card sinks into the peek slot.
+  void _buildFlyBackTweens({bool scrubbing = false}) {
+    final exit = _exitOffset;
+    final sinkCurve = scrubbing ? Curves.linear : widget.reverseSinkCurve;
+    final returnCurve = scrubbing ? Curves.linear : widget.flyCurve.flipped;
+    final scaleCurve = scrubbing ? Curves.linear : widget.flyScaleCurve.flipped;
+
+    _flyOffsetY = Tween<double>(begin: 0, end: widget.peekOffsetY).animate(
+      CurvedAnimation(parent: _flyController, curve: sinkCurve),
+    );
+    _flyOffsetX = Tween<double>(begin: 0, end: 0).animate(_flyController);
+    _flyOpacity = Tween<double>(begin: 1, end: 1).animate(_flyController);
+    _flyScale = Tween<double>(begin: 1.0, end: 0.93).animate(
+      CurvedAnimation(parent: _flyController, curve: sinkCurve),
+    );
+
+    _riseOffsetX = Tween<double>(begin: exit.dx, end: 0).animate(
+      CurvedAnimation(parent: _riseController, curve: returnCurve),
+    );
+    _riseOffsetY = Tween<double>(begin: exit.dy, end: 0).animate(
+      CurvedAnimation(parent: _riseController, curve: returnCurve),
+    );
+    _riseTilt = Tween<double>(begin: 0, end: 0).animate(_riseController);
+    _riseScale = Tween<double>(begin: 0.85, end: 1.0).animate(
+      CurvedAnimation(parent: _riseController, curve: scaleCurve),
+    );
+  }
 
   @override
   void didUpdateWidget(StackedCarousel oldWidget) {
@@ -567,7 +689,9 @@ class _StackedCarouselState extends State<StackedCarousel>
     widget.controller?._detach();
     _timer?.cancel();
     _resumeTimer?.cancel();
+    _scrollEndTimer?.cancel();
     _indexNotifier.dispose();
+    _layersTick.dispose();
     _flyController.dispose();
     _riseController.dispose();
     super.dispose();
@@ -592,24 +716,36 @@ class _StackedCarouselState extends State<StackedCarousel>
 
   Future<void> _advance({bool fromTimer = false}) async {
     if (_isAnimating || _isDragging || widget.items.length <= 1) return;
-    if (!_canGoNext) return;
+    if (!_canGoNext) {
+      if (!widget.loop) _timer?.cancel();
+      return;
+    }
     if (!fromTimer) _pauseAutoPlayForInteraction();
     _isAnimating = true;
+    final epoch = ++_motionEpoch;
+    _goingBackward = false;
+    _pendingCommit = true;
+    _pendingForward = true;
     _buildTweens();
     setState(() => _isReversing = false);
     _flyController.reset();
     _riseController.reset();
-    await Future.wait([
-      _flyController.forward(),
-      Future.delayed(
-        const Duration(milliseconds: 80),
-        () => _riseController.forward(),
-      ),
-    ]);
-    setState(() {
-      _currentIndex = (_currentIndex + 1) % widget.items.length;
-    });
-    _notifyIndexChange();
+    try {
+      await Future.wait([
+        _flyController.forward(),
+        Future.delayed(const Duration(milliseconds: 80), () {
+          if (!mounted || epoch != _motionEpoch) {
+            return Future<void>.value();
+          }
+          return _riseController.forward();
+        }),
+      ]);
+    } on TickerCanceled {
+      return;
+    }
+    if (!mounted || epoch != _motionEpoch) return;
+    _pendingCommit = false;
+    setState(() => _commitIndex(true));
     _flyController.reset();
     _riseController.reset();
     _isAnimating = false;
@@ -620,40 +756,35 @@ class _StackedCarouselState extends State<StackedCarousel>
     if (!_canGoPrevious) return;
     _pauseAutoPlayForInteraction();
     _isAnimating = true;
+    final epoch = ++_motionEpoch;
+    _pendingCommit = true;
+    _pendingForward = false;
     if (widget.reverseOnBack) {
+      _goingBackward = false;
       _buildReverseTweens();
-      setState(() => _isReversing = true);
     } else {
-      _buildTweens();
-      setState(() => _isReversing = false);
+      _goingBackward = true;
+      _buildFlyBackTweens();
     }
+    setState(() => _isReversing = true);
     _flyController.reset();
     _riseController.reset();
-    if (widget.reverseOnBack) {
-      // Reverse: rise controller leads, fly follows slightly behind.
+    try {
       await Future.wait([
         _riseController.forward(),
-        Future.delayed(
-          const Duration(milliseconds: 80),
-          () => _flyController.forward(),
-        ),
+        Future.delayed(const Duration(milliseconds: 80), () {
+          if (!mounted || epoch != _motionEpoch) {
+            return Future<void>.value();
+          }
+          return _flyController.forward();
+        }),
       ]);
-    } else {
-      // Same as forward: fly leads, rise follows.
-      await Future.wait([
-        _flyController.forward(),
-        Future.delayed(
-          const Duration(milliseconds: 80),
-          () => _riseController.forward(),
-        ),
-      ]);
+    } on TickerCanceled {
+      return;
     }
-    setState(() {
-      _currentIndex =
-          (_currentIndex - 1 + widget.items.length) % widget.items.length;
-      _isReversing = false;
-    });
-    _notifyIndexChange();
+    if (!mounted || epoch != _motionEpoch) return;
+    _pendingCommit = false;
+    setState(() => _commitIndex(false));
     _buildTweens();
     _flyController.reset();
     _riseController.reset();
@@ -668,14 +799,15 @@ class _StackedCarouselState extends State<StackedCarousel>
     setState(() {
       _currentIndex = clamped;
       _isReversing = false;
+      _goingBackward = false;
     });
     _notifyIndexChange();
   }
 
-  /// Forward: next card (index+1). Reverse: previous card (index-1).
-  int get _nextIndex => _isReversing
-      ? (_currentIndex - 1 + widget.items.length) % widget.items.length
-      : (_currentIndex + 1) % widget.items.length;
+  /// Forward: next card. Reverse: previous card. Falls back to current when
+  /// [loop] is off and there is no neighbour.
+  int get _nextIndex =>
+      _indexAtOffset(_isReversing ? -1 : 1) ?? _currentIndex;
 
   // ── Build helpers ─────────────────────────────────────────────────────────
 
@@ -690,13 +822,13 @@ class _StackedCarouselState extends State<StackedCarousel>
     double cardWidth,
     double cardHeight,
     double dirFactor,
+    double stackWidth,
   ) {
     Widget tappable(Widget card, int index) {
-      final cb = widget.onCardTap;
-      if (cb == null) return card;
-      return GestureDetector(
+      if (widget.onCardTap == null) return card;
+      return Listener(
         behavior: HitTestBehavior.opaque,
-        onTap: () => cb(index),
+        onPointerDown: (_) => _pressedCardIndex = index,
         child: card,
       );
     }
@@ -707,12 +839,34 @@ class _StackedCarouselState extends State<StackedCarousel>
       return [tappable(_CardShell(child: widget.items[0]), 0)];
     }
 
-    // Allow peekCount up to visibleCount-1 regardless of item count.
-    // Indices wrap via modulo, so with 2 items and visibleCount=3, the
-    // third stack slot simply shows the next item again (cycled).
+    // Peek slots only exist for real items. When [loop] is off, do not wrap
+    // to the first card after the last one.
     final int peekCount =
         (widget.visibleCount - 1).clamp(1, widget.visibleCount - 1);
     final List<Widget> layers = [];
+
+    /// Places a card in stack space with [offsetX]/[offsetY] so hit-testing
+    /// matches the visible peek strip. [Transform.translate] keeps its layout
+    /// bounds at the origin, which made the peek untappable.
+    Widget positionCard({
+      required double offsetX,
+      required double offsetY,
+      required Widget child,
+    }) {
+      final centered = widget.cardAlignment == CrossAxisAlignment.center;
+      final pinEnd =
+          !centered && _textDirection == TextDirection.rtl;
+      return Positioned(
+        top: offsetY,
+        left: pinEnd
+            ? null
+            : (centered ? (stackWidth - cardWidth) / 2 + offsetX : offsetX),
+        right: pinEnd ? -offsetX : null,
+        width: cardWidth,
+        height: cardHeight,
+        child: child,
+      );
+    }
 
     Widget buildCardState(
         int actualIndex, double effectiveI, double opacity, Widget cachedCard) {
@@ -721,40 +875,37 @@ class _StackedCarouselState extends State<StackedCarousel>
       final tilt = effectiveI * widget.peekTiltAngle * dirFactor;
       final scale = 1.0 - (0.07 * effectiveI);
 
-      Widget card = Transform.translate(
-        offset: Offset(offsetX, 0),
-        child: Transform(
-          alignment: Alignment.bottomCenter,
-          transform: Matrix4.identity()..rotateZ(tilt),
-          child: Transform.scale(
-            scale: scale,
-            child: SizedBox(
-              width: cardWidth,
-              height: cardHeight,
-              child: cachedCard,
-            ),
-          ),
+      Widget card = Transform(
+        alignment: Alignment.bottomCenter,
+        transform: Matrix4.identity()..rotateZ(tilt),
+        child: Transform.scale(
+          scale: scale,
+          child: cachedCard,
         ),
       );
 
       if (opacity < 1.0) {
         card = Opacity(opacity: opacity, child: card);
       }
+      card = IgnorePointer(ignoring: opacity < 0.05, child: card);
 
-      return Positioned(
-        top: offsetY,
+      return positionCard(
+        offsetX: offsetX,
+        offsetY: offsetY,
         child: card,
       );
     }
 
     if (!_isReversing) {
-      // Forward or rest animation
-      // During forward animation one extra ghost layer fades in from behind.
-      // No longer capped at n-1 so repeated items can fill the extra slot.
-      final int maxK = _isAnimating ? peekCount + 1 : peekCount;
+      // Always keep the extra back slot mounted (opacity 0 at rest) so a
+      // swipe can fade it in without a setState that would reset the gesture.
+      final int maxK = peekCount + 1;
 
       for (int k = maxK; k >= 1; k--) {
-        final int idx = (_currentIndex + k) % n;
+        final int? idx = _indexAtOffset(k);
+        if (idx == null) continue;
+        // Skip a wrapped extra slot that would duplicate the front card.
+        if (widget.loop && k > peekCount && idx == _currentIndex) continue;
         // Cache the card widget — passed as [child] so it isn't rebuilt each frame.
         final Widget cachedCard = tappable(
           _CardShell(
@@ -767,10 +918,11 @@ class _StackedCarouselState extends State<StackedCarousel>
         );
         layers.add(
           AnimatedBuilder(
+            key: ValueKey('peek-$k-$idx'),
             animation: _riseController,
             builder: (context, child) {
-              final curveT =
-                  Curves.easeOutCubic.transform(_riseController.value);
+              // Controller already carries the curve / spring — don't ease twice.
+              final curveT = _riseController.value;
               final effectiveI = k - curveT;
 
               double opacity = 1.0;
@@ -796,27 +948,35 @@ class _StackedCarouselState extends State<StackedCarousel>
       );
       layers.add(
         AnimatedBuilder(
+          key: ValueKey('front-$_currentIndex'),
           animation: _flyController,
           builder: (context, child) {
-            return Transform.translate(
-              offset: Offset(_flyOffsetX.value, _flyOffsetY.value),
-              child: Transform.scale(
-                scale: _flyScale.value,
-                child: Opacity(
-                  opacity: _flyOpacity.value,
-                  child: child,
+            return positionCard(
+              offsetX: 0,
+              offsetY: 0,
+              child: Transform.translate(
+                offset: Offset(_flyOffsetX.value, _flyOffsetY.value),
+                child: Transform.scale(
+                  scale: _flyScale.value,
+                  child: IgnorePointer(
+                    ignoring: _flyOpacity.value < 0.05,
+                    child: Opacity(
+                      opacity: _flyOpacity.value,
+                      child: child,
+                    ),
+                  ),
                 ),
               ),
             );
           },
-          child: SizedBox(
-              width: cardWidth, height: cardHeight, child: cachedFront),
+          child: cachedFront,
         ),
       );
     } else {
       // Reverse animation
       for (int k = peekCount; k >= 0; k--) {
-        final int idx = (_currentIndex + k) % n;
+        final int? idx = _indexAtOffset(k);
+        if (idx == null) continue;
         final Widget cachedCard = tappable(
           _CardShell(
             child: widget.items[idx],
@@ -830,7 +990,7 @@ class _StackedCarouselState extends State<StackedCarousel>
           AnimatedBuilder(
             animation: _flyController,
             builder: (context, child) {
-              final curveT = Curves.easeInCubic.transform(_flyController.value);
+              final curveT = _flyController.value;
               final effectiveI = k + curveT;
 
               double opacity = 1.0;
@@ -857,6 +1017,15 @@ class _StackedCarouselState extends State<StackedCarousel>
         AnimatedBuilder(
           animation: _riseController,
           builder: (context, child) {
+            if (_goingBackward) {
+              return Transform.translate(
+                offset: Offset(_riseOffsetX.value, _riseOffsetY.value),
+                child: Transform.scale(
+                  scale: _riseScale.value,
+                  child: child,
+                ),
+              );
+            }
             return Positioned(
               top: _riseOffsetY.value,
               child: Transform.translate(
@@ -884,13 +1053,294 @@ class _StackedCarouselState extends State<StackedCarousel>
 
   // ── Drag-to-scrub handlers ─────────────────────────────────────────────────
 
-  void _onDragStart(DragStartDetails details) {
-    if (!widget.dragEnabled || _isAnimating || widget.items.length <= 1) return;
+  bool get _dragBlocked {
+    if (!_dragDirectionDetermined) return false;
+    return (_dragDirectionForward && !_canGoNext) ||
+        (!_dragDirectionForward && !_canGoPrevious);
+  }
+
+  /// Maps finger travel onto 0–1. At the ends, tension so the card still
+  /// moves a little instead of going dead.
+  double _scrubFraction(double absDrag) {
+    final raw = absDrag / _dragExtent;
+    if (!_dragBlocked) return raw.clamp(0.0, 1.0);
+    if (raw <= 0) return 0;
+    return raw / (1.0 + raw);
+  }
+
+  void _clearPointer() {
+    _activePointer = null;
+    _downPosition = null;
+    _velocityTracker = null;
+    _pointerMoved = false;
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    _scrollEndTimer?.cancel();
+    _scrollEndTimer = null;
+    if (_activePointer != null) return;
+    _signalGesture = false;
+    _activePointer = event.pointer;
+    _downPosition = event.position;
+    _pointerMoved = false;
+    _velocityTracker = VelocityTracker.withKind(event.kind)
+      ..addPosition(event.timeStamp, event.position);
+    _onDragStart(DragStartDetails(
+      globalPosition: event.position,
+      localPosition: event.localPosition,
+    ));
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (event.pointer != _activePointer) return;
+    _velocityTracker?.addPosition(event.timeStamp, event.position);
+    if (_downPosition != null &&
+        (event.position - _downPosition!).distance > 4) {
+      _pointerMoved = true;
+    }
+    _onDragUpdate(DragUpdateDetails(
+      globalPosition: event.position,
+      localPosition: event.localPosition,
+      delta: Offset(event.delta.dx, 0),
+      primaryDelta: event.delta.dx,
+    ));
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    if (event.pointer != _activePointer) return;
+    _velocityTracker?.addPosition(event.timeStamp, event.position);
+    final velocity =
+        _velocityTracker?.getVelocity() ?? Velocity.zero;
+    final dxVel = velocity.pixelsPerSecond.dx;
+    final down = _downPosition;
+    final isTap = !_pointerMoved &&
+        !_dragDirectionDetermined &&
+        down != null &&
+        (event.position - down).distance < 12;
+    final tappedIndex = _pressedCardIndex;
+    _clearPointer();
+    _pressedCardIndex = null;
+
+    if (isTap) {
+      if (_isDragging && !_dragDirectionDetermined) {
+        _isDragging = false;
+        _swipeStartReported = false;
+        widget.onSwipeEnd?.call();
+      }
+      widget.onCardTap?.call(
+        tappedIndex ?? (_isReversing ? _nextIndex : _currentIndex),
+      );
+      return;
+    }
+
+    _onDragEnd(DragEndDetails(
+      velocity: Velocity(pixelsPerSecond: Offset(dxVel, 0)),
+      primaryVelocity: dxVel,
+    ));
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    if (event.pointer != _activePointer) return;
+    _clearPointer();
+    _onDragCancel();
+  }
+
+  /// Maps wheel / trackpad scroll onto the same axis as a finger swipe.
+  /// Positive scroll (wheel down, content right) becomes a leftward drag so
+  /// it advances — matching [Scrollable] / PageView.
+  double _scrollDeltaToPointerDx(Offset scrollDelta) {
+    final dominant = scrollDelta.dx.abs() >= scrollDelta.dy.abs()
+        ? scrollDelta.dx
+        : scrollDelta.dy;
+    return -dominant;
+  }
+
+  void _ensureSignalDrag(Offset position, Duration timeStamp) {
+    if (_isDragging) return;
+    _signalGesture = true;
+    _signalPosition = position;
+    _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad)
+      ..addPosition(timeStamp, position);
+    _onDragStart(DragStartDetails(globalPosition: position));
+  }
+
+  void _applySignalDx(double dx, Offset position, Duration timeStamp) {
+    _signalPosition = Offset(_signalPosition.dx + dx, _signalPosition.dy);
+    _velocityTracker?.addPosition(timeStamp, _signalPosition);
+    _onDragUpdate(DragUpdateDetails(
+      globalPosition: position,
+      delta: Offset(dx, 0),
+      primaryDelta: dx,
+    ));
+  }
+
+  void _finishSignalGesture() {
+    _scrollEndTimer?.cancel();
+    _scrollEndTimer = null;
+    if (!_isDragging) {
+      _signalGesture = false;
+      return;
+    }
+    final dxVel = _velocityTracker?.getVelocity().pixelsPerSecond.dx ?? 0.0;
+    _signalGesture = false;
+    _velocityTracker = null;
+    _onDragEnd(DragEndDetails(
+      velocity: Velocity(pixelsPerSecond: Offset(dxVel, 0)),
+      primaryVelocity: dxVel,
+    ));
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (!widget.dragEnabled || widget.items.length <= 1) return;
+    if (_activePointer != null && !_signalGesture) return;
+    final until = _ignoreScrollUntil;
+    if (until != null && DateTime.now().isBefore(until)) return;
+
+    GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
+      if (!mounted) return;
+      if (resolved is! PointerScrollEvent) return;
+      _handlePointerScroll(resolved);
+    });
+  }
+
+  void _handlePointerScroll(PointerScrollEvent event) {
+    final dx = _scrollDeltaToPointerDx(event.scrollDelta);
+    if (dx == 0) return;
+
+    final notch = event.kind == PointerDeviceKind.mouse &&
+        event.scrollDelta.distance >= 20 &&
+        !_isDragging;
+
+    if (notch) {
+      _ensureSignalDrag(event.position, event.timeStamp);
+      _applySignalDx(
+        dx.sign * _dragExtent * (widget.dragCommitThreshold + 0.15),
+        event.position,
+        event.timeStamp,
+      );
+      _finishSignalGesture();
+      return;
+    }
+
+    _ensureSignalDrag(event.position, event.timeStamp);
+    _applySignalDx(dx, event.position, event.timeStamp);
+    _scrollEndTimer?.cancel();
+    _scrollEndTimer = Timer(
+      const Duration(milliseconds: 40),
+      _finishSignalGesture,
+    );
+  }
+
+  void _onPanZoomStart(PointerPanZoomStartEvent event) {
+    if (!widget.dragEnabled || widget.items.length <= 1) return;
+    if (_activePointer != null && !_signalGesture) return;
+    _scrollEndTimer?.cancel();
+    _activePointer = event.pointer;
+    _signalGesture = true;
+    _signalPosition = event.position;
+    _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad)
+      ..addPosition(event.timeStamp, event.position);
+    _onDragStart(DragStartDetails(
+      globalPosition: event.position,
+      localPosition: event.localPosition,
+    ));
+  }
+
+  void _onPanZoomUpdate(PointerPanZoomUpdateEvent event) {
+    if (!_signalGesture) return;
+    if (_activePointer != null && event.pointer != _activePointer) return;
+    _applySignalDx(event.panDelta.dx, event.position, event.timeStamp);
+  }
+
+  void _onPanZoomEnd(PointerPanZoomEndEvent event) {
+    if (!_signalGesture) return;
+    if (_activePointer != null && event.pointer != _activePointer) return;
+    _activePointer = null;
+    _finishSignalGesture();
+    _ignoreScrollUntil = DateTime.now().add(const Duration(milliseconds: 80));
+  }
+
+  void _onDragStart(DragStartDetails _) {
+    if (!widget.dragEnabled || widget.items.length <= 1) return;
+    if (_isDragging) return;
+    _swipeStartReported = false;
+    _pauseAutoPlayForInteraction();
+
+    if (_isAnimating) {
+      final commitNow = _pendingCommit;
+      final commitForward = _pendingForward;
+      _motionEpoch++;
+      _flyController.stop();
+      _riseController.stop();
+      _isAnimating = false;
+
+      if (commitNow) {
+        // Finish the previous card immediately so this gesture owns the next.
+        widget.onSwipeEnd?.call();
+        _commitIndex(commitForward);
+        _flyController.reset();
+        _riseController.reset();
+        _buildTweens(scrubbing: true);
+        _refreshLayers();
+        _isDragging = true;
+        _dragDirectionDetermined = false;
+        _accumulatedDragX = 0;
+        return;
+      }
+
+      _isDragging = true;
+      _dragDirectionDetermined = true;
+      final t = _flyController.value.clamp(0.0, 1.0);
+      _riseController.value = t;
+      if (_dragDirectionForward) {
+        _buildTweens(scrubbing: true);
+        _accumulatedDragX = -t * _dragExtent;
+      } else {
+        if (widget.reverseOnBack) {
+          _buildReverseTweens(scrubbing: true);
+        } else {
+          _buildFlyBackTweens(scrubbing: true);
+        }
+        _accumulatedDragX = t * _dragExtent;
+      }
+      _reportSwipeStart();
+      return;
+    }
+
     _isDragging = true;
     _dragDirectionDetermined = false;
     _accumulatedDragX = 0;
+  }
+
+  void _reportSwipeStart() {
+    if (_swipeStartReported) return;
+    _swipeStartReported = true;
     widget.onSwipeStart?.call();
-    _pauseAutoPlayForInteraction();
+  }
+
+  void _lockDragDirection(bool forward) {
+    final wasReversing = _isReversing;
+    final wasBackward = _goingBackward;
+    _dragDirectionForward = forward;
+    if (forward) {
+      _goingBackward = false;
+      _isReversing = false;
+      _buildTweens(scrubbing: true);
+    } else if (widget.reverseOnBack) {
+      _goingBackward = false;
+      _isReversing = true;
+      _buildReverseTweens(scrubbing: true);
+    } else {
+      _goingBackward = true;
+      _isReversing = true;
+      _buildFlyBackTweens(scrubbing: true);
+    }
+    _dragDirectionDetermined = true;
+    if (_isReversing != wasReversing || _goingBackward != wasBackward) {
+      _refreshLayers();
+    }
+    _reportSwipeStart();
   }
 
   void _onDragUpdate(DragUpdateDetails details) {
@@ -898,44 +1348,20 @@ class _StackedCarouselState extends State<StackedCarousel>
 
     _accumulatedDragX += details.delta.dx * _dirFactor;
 
-    // Wait until the user has moved enough to determine direction.
     if (!_dragDirectionDetermined) {
-      if (_accumulatedDragX.abs() < 6) return;
-      // Negative accumulated = dragging toward next; positive = toward previous.
-      _dragDirectionForward = _accumulatedDragX < 0;
-
-      // Respect loop / bounds.
-      if (_dragDirectionForward && !_canGoNext) {
-        _isDragging = false;
-        return;
+      if (_accumulatedDragX.abs() < 1.0) return;
+      _lockDragDirection(_accumulatedDragX < 0);
+    } else {
+      final nowForward = _accumulatedDragX < 0;
+      if (nowForward != _dragDirectionForward &&
+          _accumulatedDragX.abs() > 2) {
+        _lockDragDirection(nowForward);
       }
-      if (!_dragDirectionForward && !_canGoPrevious) {
-        _isDragging = false;
-        return;
-      }
-
-      if (_dragDirectionForward) {
-        _buildTweens();
-        setState(() => _isReversing = false);
-      } else {
-        // Backward drag: use reverse or forward tweens based on flag.
-        if (widget.reverseOnBack) {
-          _buildReverseTweens();
-          setState(() => _isReversing = true);
-        } else {
-          _buildTweens();
-          setState(() => _isReversing = false);
-        }
-      }
-      _flyController.reset();
-      _riseController.reset();
-      _dragDirectionDetermined = true;
     }
 
     if (!_dragDirectionDetermined) return;
 
-    // Map accumulated drag to a 0-1 controller value.
-    final fraction = (_accumulatedDragX.abs() / _cardWidth).clamp(0.0, 1.0);
+    final fraction = _scrubFraction(_accumulatedDragX.abs());
     _flyController.value = fraction;
     _riseController.value = fraction;
   }
@@ -944,57 +1370,71 @@ class _StackedCarouselState extends State<StackedCarousel>
     if (!_isDragging) return;
     if (!_dragDirectionDetermined) {
       _isDragging = false;
+      _swipeStartReported = false;
       widget.onSwipeEnd?.call();
       return;
     }
 
-    final velocity = (details.primaryVelocity ?? 0) * _dirFactor;
+    final pxVel = (details.primaryVelocity ?? 0) * _dirFactor;
+    // Fraction grows with |drag| in both directions, so back-swipe velocity
+    // must be flipped or the spring fights the fling.
+    final controllerVel =
+        (_dragDirectionForward ? -pxVel : pxVel) / _dragExtent;
     final fraction = _flyController.value;
-
-    // Commit if dragged far enough OR flicked fast enough in the right direction.
-    final bool fastFling = velocity.abs() > widget.swipeThreshold &&
-        ((_dragDirectionForward && velocity < 0) ||
-            (!_dragDirectionForward && velocity > 0));
-    final bool shouldCommit =
-        fraction >= widget.dragCommitThreshold || fastFling;
+    final continueFling = _dragDirectionForward ? pxVel < 0 : pxVel > 0;
+    final fastFling =
+        continueFling && pxVel.abs() > widget.swipeThreshold;
+    final shouldCommit = !_dragBlocked &&
+        (fraction >= widget.dragCommitThreshold ||
+            (fastFling && fraction > 0.02));
 
     _isDragging = false;
     _dragDirectionDetermined = false;
     _isAnimating = true;
+    _pendingCommit = shouldCommit;
+    _pendingForward = _dragDirectionForward;
+    final epoch = ++_motionEpoch;
+    final endValue = shouldCommit ? 1.0 : 0.0;
+    final almostDone = shouldCommit
+        ? fraction >= 0.85
+        : fraction <= 0.12;
 
-    // Use spring physics so the commit / snap-back feels physical.
-    // The spring stiffness scales with remaining distance so short snaps
-    // feel snappy and long ones feel weighty.
-    final double endValue = shouldCommit ? 1.0 : 0.0;
-    final double dragVelocity =
-        (details.primaryVelocity ?? 0).abs() / (_cardWidth * 1000);
-    final spring = SpringDescription(
-      mass: 1,
-      stiffness: shouldCommit ? 200 : 300,
-      damping: shouldCommit ? 20 : 26,
-    );
-    await Future.wait([
-      _flyController.animateWith(
-        SpringSimulation(spring, _flyController.value, endValue, dragVelocity),
-      ),
-      _riseController.animateWith(
-        SpringSimulation(spring, _riseController.value, endValue, dragVelocity),
-      ),
-    ]);
+    try {
+      if (almostDone) {
+        _flyController.value = endValue;
+        _riseController.value = endValue;
+      } else {
+        await Future.wait([
+          _flyController.animateWith(
+            ScrollSpringSimulation(
+              _kSettleSpring,
+              _flyController.value,
+              endValue,
+              controllerVel,
+            ),
+          ),
+          _riseController.animateWith(
+            ScrollSpringSimulation(
+              _kSettleSpring,
+              _riseController.value,
+              endValue,
+              controllerVel,
+            ),
+          ),
+        ]);
+      }
+    } on TickerCanceled {
+      return;
+    }
 
-    if (shouldCommit) {
-      setState(() {
-        if (_dragDirectionForward) {
-          _currentIndex = (_currentIndex + 1) % widget.items.length;
-        } else {
-          _currentIndex =
-              (_currentIndex - 1 + widget.items.length) % widget.items.length;
-        }
-        _isReversing = false;
-      });
-      _notifyIndexChange();
+    if (!mounted || epoch != _motionEpoch) return;
+    if (_pendingCommit) {
+      _commitIndex(_pendingForward);
+      _refreshLayers();
     } else {
-      setState(() => _isReversing = false);
+      _isReversing = false;
+      _goingBackward = false;
+      _refreshLayers();
     }
 
     widget.onSwipeEnd?.call();
@@ -1002,18 +1442,27 @@ class _StackedCarouselState extends State<StackedCarousel>
     _flyController.reset();
     _riseController.reset();
     _isAnimating = false;
+    _pendingCommit = false;
+    _swipeStartReported = false;
   }
 
   void _onDragCancel() {
     if (!_isDragging) return;
+    if (_dragDirectionDetermined) {
+      _onDragEnd(DragEndDetails());
+      return;
+    }
     _isDragging = false;
     _dragDirectionDetermined = false;
+    _goingBackward = false;
+    _swipeStartReported = false;
     setState(() => _isReversing = false);
     widget.onSwipeEnd?.call();
     _buildTweens();
     _flyController.reset();
     _riseController.reset();
     _isAnimating = false;
+    _refreshLayers();
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -1031,8 +1480,18 @@ class _StackedCarouselState extends State<StackedCarousel>
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final cardWidth = constraints.maxWidth * widget.cardWidthFactor;
-        _cardWidth = cardWidth; // cache for drag handlers
+        final int peekCount = (widget.visibleCount - 1)
+            .clamp(1, widget.items.length > 1 ? widget.items.length - 1 : 1);
+
+        // Keep peekOffsetX == 0 identical to the old tight layout. Otherwise
+        // shrink the card so the peek strip sits inside this box's hit target.
+        final peekReserveX = widget.peekOffsetX == 0.0
+            ? 0.0
+            : widget.peekOffsetX.abs() * peekCount;
+        final availableWidth =
+            math.max(0.0, constraints.maxWidth - peekReserveX);
+        final cardWidth = availableWidth * widget.cardWidthFactor;
+        _cardWidth = cardWidth;
         final cardHeight = widget.cardHeight;
 
         // Resolve start alignment to the correct physical side.
@@ -1043,43 +1502,55 @@ class _StackedCarouselState extends State<StackedCarousel>
           stackAlignment = isRTL ? Alignment.topRight : Alignment.topLeft;
         }
 
-        final int peekCount = (widget.visibleCount - 1)
-            .clamp(1, widget.items.length > 1 ? widget.items.length - 1 : 1);
-
         return SizedBox(
           width: constraints.maxWidth,
           height: cardHeight + (widget.peekOffsetY * peekCount) + 16,
-          child: GestureDetector(
-            onHorizontalDragStart: _onDragStart,
-            onHorizontalDragUpdate: _onDragUpdate,
-            onHorizontalDragEnd: _onDragEnd,
-            onHorizontalDragCancel: _onDragCancel,
-            child: Stack(
-              alignment: stackAlignment,
-              clipBehavior: Clip.none,
-              children: [
-                ..._buildCardLayers(cardWidth, cardHeight, _dirFactor),
-                // Built-in dot indicator (can be disabled in favour of indicatorBuilder).
-                if (widget.isDotIndicatorEnabled)
-                  Positioned(
-                    bottom: 0,
-                    child: _DotsIndicator(
-                      count: widget.items.length,
-                      current: _currentIndex,
-                      activeColor: widget.dotIndicatorActiveColor,
-                      inactiveColor: widget.dotIndicatorInactiveColor,
-                      dotSize: widget.dotIndicatorSize,
-                      dotSpacing: widget.dotIndicatorSpacing,
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: _onPointerDown,
+            onPointerMove: _onPointerMove,
+            onPointerUp: _onPointerUp,
+            onPointerCancel: _onPointerCancel,
+            onPointerSignal: _onPointerSignal,
+            onPointerPanZoomStart: _onPanZoomStart,
+            onPointerPanZoomUpdate: _onPanZoomUpdate,
+            onPointerPanZoomEnd: _onPanZoomEnd,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _layersTick,
+              builder: (context, _, __) {
+                return Stack(
+                  alignment: stackAlignment,
+                  clipBehavior: Clip.none,
+                  children: [
+                    ..._buildCardLayers(
+                      cardWidth,
+                      cardHeight,
+                      _dirFactor,
+                      constraints.maxWidth,
                     ),
-                  ),
-                // Custom indicator overrides the built-in one.
-                if (widget.indicatorBuilder != null)
-                  Positioned(
-                    bottom: 0,
-                    child: widget.indicatorBuilder!(
-                        widget.items.length, _currentIndex),
-                  ),
-              ],
+                    // Built-in dot indicator (can be disabled in favour of indicatorBuilder).
+                    if (widget.isDotIndicatorEnabled)
+                      Positioned(
+                        bottom: 0,
+                        child: _DotsIndicator(
+                          count: widget.items.length,
+                          current: _currentIndex,
+                          activeColor: widget.dotIndicatorActiveColor,
+                          inactiveColor: widget.dotIndicatorInactiveColor,
+                          dotSize: widget.dotIndicatorSize,
+                          dotSpacing: widget.dotIndicatorSpacing,
+                        ),
+                      ),
+                    // Custom indicator overrides the built-in one.
+                    if (widget.indicatorBuilder != null)
+                      Positioned(
+                        bottom: 0,
+                        child: widget.indicatorBuilder!(
+                            widget.items.length, _currentIndex),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
         );

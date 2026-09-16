@@ -92,7 +92,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
               ),
             ),
             Expanded(
-              child: SingleChildScrollView(
+              child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 28),
                 child: Directionality(
                   textDirection: _textDirection,
@@ -100,7 +100,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     controller: _controller,
                     // autoPlay: false,
                     autoPlayInterval: const Duration(seconds: 3),
-                    animationDuration: const Duration(milliseconds: 650),
+                    animationDuration: const Duration(milliseconds: 450),
                     cardWidthFactor: 0.8,
                     cardHeight: 350,
                     isDotIndicatorEnabled: true,
@@ -113,7 +113,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     reverseSwipeDirection: false,
                     reverseOnBack: false,
                     visibleCount: 2,
-                    flyCurve: Easing.legacyAccelerate,
+                    flyCurve: Curves.easeOutCubic,
                     dotIndicatorActiveColor: Colors.red,
                     dotIndicatorInactiveColor: Colors.white,
                     // dotIndicatorSize: 12,

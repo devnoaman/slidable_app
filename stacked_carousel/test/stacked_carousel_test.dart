@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stacked_carousel/stacked_carousel.dart';
@@ -170,5 +171,246 @@ void main() {
       );
       expect(find.byKey(const Key('c0')), findsOneWidget, reason: '$direction');
     }
+  });
+
+  testWidgets('swipe fling advances to the next card', (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                controller: ctrl,
+                autoPlay: false,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                visibleCount: 2,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(ctrl.currentIndex, 0);
+    await tester.fling(
+      find.byType(StackedCarousel),
+      const Offset(-280, 0),
+      1200,
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 1);
+  });
+
+  testWidgets('backward swipe reveals the previous card', (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                controller: ctrl,
+                autoPlay: false,
+                reverseOnBack: false,
+                initialIndex: 1,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                visibleCount: 2,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(ctrl.currentIndex, 1);
+    await tester.fling(
+      find.byType(StackedCarousel),
+      const Offset(280, 0),
+      1200,
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 0);
+  });
+
+  testWidgets('RTL backward swipe reveals the previous card', (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Directionality(
+          textDirection: TextDirection.rtl,
+          child: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 400,
+                height: 480,
+                child: StackedCarousel(
+                  controller: ctrl,
+                  autoPlay: false,
+                  reverseOnBack: false,
+                  flyDirection: FlyDirection.end,
+                  initialIndex: 1,
+                  cardHeight: 400,
+                  cardWidthFactor: 1,
+                  visibleCount: 2,
+                  items: const [
+                    SizedBox(key: Key('c0'), width: 400, height: 400),
+                    SizedBox(key: Key('c1'), width: 400, height: 400),
+                    SizedBox(key: Key('c2'), width: 400, height: 400),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(ctrl.currentIndex, 1);
+    await tester.fling(
+      find.byType(StackedCarousel),
+      const Offset(-280, 0),
+      1200,
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 0);
+  });
+
+  testWidgets('mouse wheel advances to the next card', (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                controller: ctrl,
+                autoPlay: false,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                visibleCount: 2,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(ctrl.currentIndex, 0);
+    final center = tester.getCenter(find.byType(StackedCarousel));
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: center,
+        scrollDelta: const Offset(0, 80),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 1);
+  });
+
+  testWidgets('without loop the last card does not wrap to the first',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                controller: ctrl,
+                autoPlay: false,
+                loop: false,
+                initialIndex: 2,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                visibleCount: 2,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(ctrl.currentIndex, 2);
+    expect(find.byKey(const Key('c0')), findsNothing);
+    await tester.fling(
+      find.byType(StackedCarousel),
+      const Offset(-280, 0),
+      1200,
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 2);
+  });
+
+  testWidgets('onCardTap reports the tapped card index', (tester) async {
+    int? tapped;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                autoPlay: false,
+                loop: false,
+                isDotIndicatorEnabled: false,
+                cardHeight: 400,
+                cardWidthFactor: 0.7,
+                cardAlignment: CrossAxisAlignment.start,
+                peekOffsetX: 80,
+                peekOffsetY: 0,
+                peekTiltAngle: 0,
+                visibleCount: 2,
+                onCardTap: (i) => tapped = i,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final origin = tester.getTopLeft(find.byType(StackedCarousel));
+    await tester.tapAt(origin + const Offset(140, 200));
+    await tester.pump();
+    expect(tapped, 0);
+
+    await tester.tapAt(origin + const Offset(260, 200));
+    await tester.pump();
+    expect(tapped, 1);
   });
 }
