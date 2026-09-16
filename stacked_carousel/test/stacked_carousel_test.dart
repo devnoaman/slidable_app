@@ -413,4 +413,60 @@ void main() {
     await tester.pump();
     expect(tapped, 1);
   });
+
+  testWidgets('autoPlayDirection.end advances to the next card', (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StackedCarousel(
+            controller: ctrl,
+            autoPlay: true,
+            autoPlayDirection: AutoPlayDirection.end,
+            autoPlayInterval: const Duration(milliseconds: 200),
+            animationDuration: const Duration(milliseconds: 50),
+            isDotIndicatorEnabled: false,
+            items: const [
+              SizedBox(key: Key('c0'), width: 100, height: 100),
+              SizedBox(key: Key('c1'), width: 100, height: 100),
+              SizedBox(key: Key('c2'), width: 100, height: 100),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(ctrl.currentIndex, 0);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 1);
+  });
+
+  testWidgets('autoPlayDirection.start retreats toward the first card',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StackedCarousel(
+            controller: ctrl,
+            autoPlay: true,
+            autoPlayDirection: AutoPlayDirection.start,
+            autoPlayInterval: const Duration(milliseconds: 200),
+            animationDuration: const Duration(milliseconds: 50),
+            initialIndex: 1,
+            isDotIndicatorEnabled: false,
+            items: const [
+              SizedBox(key: Key('c0'), width: 100, height: 100),
+              SizedBox(key: Key('c1'), width: 100, height: 100),
+              SizedBox(key: Key('c2'), width: 100, height: 100),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(ctrl.currentIndex, 1);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 0);
+  });
 }

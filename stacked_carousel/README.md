@@ -79,5 +79,6 @@ print(_controller.currentIndex);
 | `flyDirection` | `FlyDirection` | `.up` | Dismissed card fly direction. `start` / `end` follow `Directionality` |
 | `swipeThreshold` | `double` | `300` | Min swipe velocity in px/s |
 | `autoPlay` | `bool` | `true` | Auto-advance on timer |
+| `autoPlayDirection` | `AutoPlayDirection` | `.end` | Timer walks toward list `end` (next) or `start` (previous) |
 | `autoPlayInterval` | `Duration` | `3s` | Interval between advances |
 | `animationDuration` | `Duration` | `600ms` | Transition duration |

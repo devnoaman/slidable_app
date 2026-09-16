@@ -3,4 +3,8 @@
 library stacked_carousel;
 
 export 'src/stacked_carousel.dart'
-    show StackedCarousel, StackedCarouselController, FlyDirection;
+    show
+        StackedCarousel,
+        StackedCarouselController,
+        FlyDirection,
+        AutoPlayDirection;

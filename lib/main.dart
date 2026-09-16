@@ -100,6 +100,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     controller: _controller,
                     // autoPlay: false,
                     autoPlayInterval: const Duration(seconds: 3),
+                    autoPlayDirection: AutoPlayDirection.end,
                     animationDuration: const Duration(milliseconds: 450),
                     cardWidthFactor: 0.8,
                     cardHeight: 350,

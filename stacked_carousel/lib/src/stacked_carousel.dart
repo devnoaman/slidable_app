@@ -93,6 +93,14 @@ enum FlyDirection {
   }
 }
 
+/// Which way auto-play walks the item list.
+///
+/// [end] (default) advances to the next card (`index + 1`), revealing the
+/// peek that sits toward [Directionality] end.
+/// [start] goes back toward the first card (`index - 1`).
+/// Both wrap when [StackedCarousel.loop] is `true`.
+enum AutoPlayDirection { start, end }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // StackedCarouselController
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,6 +181,7 @@ class StackedCarousel extends StatefulWidget {
     this.flyDirection = FlyDirection.up,
     this.swipeThreshold = 200.0,
     this.autoPlay = true,
+    this.autoPlayDirection = AutoPlayDirection.end,
     this.isDotIndicatorEnabled = true,
     this.visibleCount = 3,
     this.loop = true,
@@ -272,6 +281,10 @@ class StackedCarousel extends StatefulWidget {
 
   /// Whether the carousel auto-advances on a timer.
   final bool autoPlay;
+
+  /// Which way the timer walks the list. Defaults to [AutoPlayDirection.end]
+  /// (next card). Set [AutoPlayDirection.start] to auto-play backward.
+  final AutoPlayDirection autoPlayDirection;
 
   /// Whether the dot indicator is visible.
   final bool isDotIndicatorEnabled;
@@ -678,7 +691,8 @@ class _StackedCarouselState extends State<StackedCarousel>
       _buildTweens();
     }
     if (oldWidget.autoPlay != widget.autoPlay ||
-        oldWidget.autoPlayInterval != widget.autoPlayInterval) {
+        oldWidget.autoPlayInterval != widget.autoPlayInterval ||
+        oldWidget.autoPlayDirection != widget.autoPlayDirection) {
       _timer?.cancel();
       if (widget.autoPlay && widget.items.length > 1) _startTimer();
     }
@@ -701,8 +715,13 @@ class _StackedCarouselState extends State<StackedCarousel>
 
   void _startTimer() {
     _timer?.cancel();
-    _timer = Timer.periodic(
-        widget.autoPlayInterval, (_) => _advance(fromTimer: true));
+    _timer = Timer.periodic(widget.autoPlayInterval, (_) {
+      if (widget.autoPlayDirection == AutoPlayDirection.start) {
+        _retreat(fromTimer: true);
+      } else {
+        _advance(fromTimer: true);
+      }
+    });
   }
 
   /// If [pauseAutoPlayOnInteraction] is on, stop the periodic timer and
@@ -751,10 +770,13 @@ class _StackedCarouselState extends State<StackedCarousel>
     _isAnimating = false;
   }
 
-  Future<void> _retreat() async {
+  Future<void> _retreat({bool fromTimer = false}) async {
     if (_isAnimating || _isDragging || widget.items.length <= 1) return;
-    if (!_canGoPrevious) return;
-    _pauseAutoPlayForInteraction();
+    if (!_canGoPrevious) {
+      if (!widget.loop) _timer?.cancel();
+      return;
+    }
+    if (!fromTimer) _pauseAutoPlayForInteraction();
     _isAnimating = true;
     final epoch = ++_motionEpoch;
     _pendingCommit = true;
