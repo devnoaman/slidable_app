@@ -441,6 +441,45 @@ void main() {
     expect(ctrl.currentIndex, 1);
   });
 
+  testWidgets(
+      'autoPlayDirection.end keeps next card mounted during fly',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StackedCarousel(
+            controller: ctrl,
+            autoPlay: true,
+            autoPlayDirection: AutoPlayDirection.end,
+            autoPlayInterval: const Duration(milliseconds: 200),
+            animationDuration: const Duration(milliseconds: 400),
+            visibleCount: 2,
+            isDotIndicatorEnabled: false,
+            items: const [
+              SizedBox(key: Key('c0'), width: 100, height: 100),
+              SizedBox(key: Key('c1'), width: 100, height: 100),
+              SizedBox(key: Key('c2'), width: 100, height: 100),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(ctrl.currentIndex, 0);
+    expect(find.byKey(const Key('c1')), findsOneWidget);
+
+    // Fire autoplay advance, then sample mid-flight — next card must stay
+    // in the tree (rising), not appear only after fly completes.
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(ctrl.currentIndex, 0);
+    expect(find.byKey(const Key('c1')), findsOneWidget);
+
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 1);
+    expect(find.byKey(const Key('c1')), findsOneWidget);
+  });
+
   testWidgets('autoPlayDirection.start retreats toward the first card',
       (tester) async {
     final ctrl = StackedCarouselController();
@@ -468,5 +507,142 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     await tester.pumpAndSettle();
     expect(ctrl.currentIndex, 0);
+  });
+
+  testWidgets(
+      'horizontal drag inside a ListView does not scroll the parent',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    final scrollCtrl = ScrollController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            controller: scrollCtrl,
+            children: [
+              const SizedBox(height: 80),
+              SizedBox(
+                height: 420,
+                child: StackedCarousel(
+                  controller: ctrl,
+                  autoPlay: false,
+                  cardHeight: 400,
+                  cardWidthFactor: 1,
+                  visibleCount: 2,
+                  items: const [
+                    SizedBox(key: Key('c0'), width: 400, height: 400),
+                    SizedBox(key: Key('c1'), width: 400, height: 400),
+                    SizedBox(key: Key('c2'), width: 400, height: 400),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 1200),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(scrollCtrl.offset, 0);
+    await tester.fling(
+      find.byType(StackedCarousel),
+      const Offset(-280, 0),
+      1200,
+    );
+    await tester.pumpAndSettle();
+    expect(scrollCtrl.offset, 0);
+    expect(ctrl.currentIndex, 1);
+  });
+
+  testWidgets(
+      'vertical mouse wheel over a nested carousel scrolls the parent, not the cards',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    final scrollCtrl = ScrollController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            controller: scrollCtrl,
+            children: [
+              const SizedBox(height: 80),
+              SizedBox(
+                height: 420,
+                child: StackedCarousel(
+                  controller: ctrl,
+                  autoPlay: false,
+                  cardHeight: 400,
+                  cardWidthFactor: 1,
+                  visibleCount: 2,
+                  items: const [
+                    SizedBox(key: Key('c0'), width: 400, height: 400),
+                    SizedBox(key: Key('c1'), width: 400, height: 400),
+                    SizedBox(key: Key('c2'), width: 400, height: 400),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 1200),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(find.byType(StackedCarousel));
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: center,
+        scrollDelta: const Offset(0, 80),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 0);
+    expect(scrollCtrl.offset, greaterThan(0));
+  });
+
+  testWidgets(
+      'horizontal mouse wheel over a nested carousel advances cards without scrolling the parent',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    final scrollCtrl = ScrollController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            controller: scrollCtrl,
+            children: [
+              const SizedBox(height: 80),
+              SizedBox(
+                height: 420,
+                child: StackedCarousel(
+                  controller: ctrl,
+                  autoPlay: false,
+                  cardHeight: 400,
+                  cardWidthFactor: 1,
+                  visibleCount: 2,
+                  items: const [
+                    SizedBox(key: Key('c0'), width: 400, height: 400),
+                    SizedBox(key: Key('c1'), width: 400, height: 400),
+                    SizedBox(key: Key('c2'), width: 400, height: 400),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 1200),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(find.byType(StackedCarousel));
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: center,
+        scrollDelta: const Offset(80, 0),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(ctrl.currentIndex, 1);
+    expect(scrollCtrl.offset, 0);
   });
 }

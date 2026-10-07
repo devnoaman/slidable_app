@@ -480,16 +480,12 @@ class _StackedCarouselState extends State<StackedCarousel>
   bool _pendingCommit = false;
   bool _pendingForward = true;
   double _accumulatedDragX = 0;
-  int? _activePointer;
-  Offset? _downPosition;
   VelocityTracker? _velocityTracker;
-  bool _pointerMoved = false;
   bool _swipeStartReported = false;
   int? _pressedCardIndex;
   bool _signalGesture = false;
   Offset _signalPosition = Offset.zero;
   Timer? _scrollEndTimer;
-  DateTime? _ignoreScrollUntil;
   // Set from build() so drag handlers can read it without a BuildContext.
   double _dirFactor = 1.0;
   double _cardWidth = 300.0;
@@ -750,14 +746,12 @@ class _StackedCarouselState extends State<StackedCarousel>
     _flyController.reset();
     _riseController.reset();
     try {
+      // Drive fly and rise together (same as drag scrub) so the next peek
+      // card is already on-stack and rising into front while the current
+      // card flies — not delayed until after the exit finishes.
       await Future.wait([
         _flyController.forward(),
-        Future.delayed(const Duration(milliseconds: 80), () {
-          if (!mounted || epoch != _motionEpoch) {
-            return Future<void>.value();
-          }
-          return _riseController.forward();
-        }),
+        _riseController.forward(),
       ]);
     } on TickerCanceled {
       return;
@@ -940,7 +934,9 @@ class _StackedCarouselState extends State<StackedCarousel>
         );
         layers.add(
           AnimatedBuilder(
-            key: ValueKey('peek-$k-$idx'),
+            // Stable per-item key so the peek Element becomes the front after
+            // commit (avoids remount / image decode + fade on the next card).
+            key: ValueKey('card-$idx'),
             animation: _riseController,
             builder: (context, child) {
               // Controller already carries the curve / spring — don't ease twice.
@@ -970,7 +966,7 @@ class _StackedCarouselState extends State<StackedCarousel>
       );
       layers.add(
         AnimatedBuilder(
-          key: ValueKey('front-$_currentIndex'),
+          key: ValueKey('card-$_currentIndex'),
           animation: _flyController,
           builder: (context, child) {
             return positionCard(
@@ -1090,81 +1086,65 @@ class _StackedCarouselState extends State<StackedCarousel>
     return raw / (1.0 + raw);
   }
 
-  void _clearPointer() {
-    _activePointer = null;
-    _downPosition = null;
-    _velocityTracker = null;
-    _pointerMoved = false;
+  /// Horizontal drag/trackpad recognizer so this carousel competes in the
+  /// gesture arena with a parent [Scrollable]. A raw [Listener] never claims,
+  /// so a surrounding vertical ListView would scroll at the same time.
+  Map<Type, GestureRecognizerFactory> get _carouselGestures {
+    return {
+      HorizontalDragGestureRecognizer:
+          GestureRecognizerFactoryWithHandlers<HorizontalDragGestureRecognizer>(
+        () => HorizontalDragGestureRecognizer(debugOwner: this),
+        (HorizontalDragGestureRecognizer instance) {
+          instance
+            ..onStart = widget.dragEnabled ? _onHorizontalDragStart : null
+            ..onUpdate = widget.dragEnabled ? _onHorizontalDragUpdate : null
+            ..onEnd = widget.dragEnabled ? _onHorizontalDragEnd : null
+            ..onCancel = widget.dragEnabled ? _onHorizontalDragCancel : null;
+        },
+      ),
+      if (widget.onCardTap != null)
+        TapGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+          () => TapGestureRecognizer(debugOwner: this),
+          (TapGestureRecognizer instance) {
+            instance.onTap = _onCarouselTap;
+          },
+        ),
+    };
   }
 
-  void _onPointerDown(PointerDownEvent event) {
+  void _onHorizontalDragStart(DragStartDetails details) {
     _scrollEndTimer?.cancel();
     _scrollEndTimer = null;
-    if (_activePointer != null) return;
     _signalGesture = false;
-    _activePointer = event.pointer;
-    _downPosition = event.position;
-    _pointerMoved = false;
-    _velocityTracker = VelocityTracker.withKind(event.kind)
-      ..addPosition(event.timeStamp, event.position);
-    _onDragStart(DragStartDetails(
-      globalPosition: event.position,
-      localPosition: event.localPosition,
-    ));
+    _onDragStart(details);
   }
 
-  void _onPointerMove(PointerMoveEvent event) {
-    if (event.pointer != _activePointer) return;
-    _velocityTracker?.addPosition(event.timeStamp, event.position);
-    if (_downPosition != null &&
-        (event.position - _downPosition!).distance > 4) {
-      _pointerMoved = true;
-    }
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
     _onDragUpdate(DragUpdateDetails(
-      globalPosition: event.position,
-      localPosition: event.localPosition,
-      delta: Offset(event.delta.dx, 0),
-      primaryDelta: event.delta.dx,
+      globalPosition: details.globalPosition,
+      localPosition: details.localPosition,
+      delta: Offset(details.delta.dx, 0),
+      primaryDelta: details.primaryDelta ?? details.delta.dx,
     ));
   }
 
-  void _onPointerUp(PointerUpEvent event) {
-    if (event.pointer != _activePointer) return;
-    _velocityTracker?.addPosition(event.timeStamp, event.position);
-    final velocity =
-        _velocityTracker?.getVelocity() ?? Velocity.zero;
-    final dxVel = velocity.pixelsPerSecond.dx;
-    final down = _downPosition;
-    final isTap = !_pointerMoved &&
-        !_dragDirectionDetermined &&
-        down != null &&
-        (event.position - down).distance < 12;
-    final tappedIndex = _pressedCardIndex;
-    _clearPointer();
-    _pressedCardIndex = null;
-
-    if (isTap) {
-      if (_isDragging && !_dragDirectionDetermined) {
-        _isDragging = false;
-        _swipeStartReported = false;
-        widget.onSwipeEnd?.call();
-      }
-      widget.onCardTap?.call(
-        tappedIndex ?? (_isReversing ? _nextIndex : _currentIndex),
-      );
-      return;
-    }
-
+  void _onHorizontalDragEnd(DragEndDetails details) {
+    final dxVel = details.primaryVelocity ?? details.velocity.pixelsPerSecond.dx;
     _onDragEnd(DragEndDetails(
       velocity: Velocity(pixelsPerSecond: Offset(dxVel, 0)),
       primaryVelocity: dxVel,
     ));
   }
 
-  void _onPointerCancel(PointerCancelEvent event) {
-    if (event.pointer != _activePointer) return;
-    _clearPointer();
-    _onDragCancel();
+  void _onHorizontalDragCancel() => _onDragCancel();
+
+  void _onCarouselTap() {
+    final tappedIndex = _pressedCardIndex;
+    _pressedCardIndex = null;
+    widget.onCardTap?.call(
+      tappedIndex ?? (_isReversing ? _nextIndex : _currentIndex),
+    );
   }
 
   /// Maps wheel / trackpad scroll onto the same axis as a finger swipe.
@@ -1175,6 +1155,19 @@ class _StackedCarouselState extends State<StackedCarousel>
         ? scrollDelta.dx
         : scrollDelta.dy;
     return -dominant;
+  }
+
+  bool get _nestedInVerticalScrollable {
+    final parent = Scrollable.maybeOf(context);
+    return parent != null && parent.position.axis == Axis.vertical;
+  }
+
+  void _consumePointerSignal(PointerSignalEvent event) {
+    GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
+      if (resolved is PointerScrollEvent) {
+        resolved.respond(allowPlatformDefault: false);
+      }
+    });
   }
 
   void _ensureSignalDrag(Offset position, Duration timeStamp) {
@@ -1215,13 +1208,25 @@ class _StackedCarouselState extends State<StackedCarousel>
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
     if (!widget.dragEnabled || widget.items.length <= 1) return;
-    if (_activePointer != null && !_signalGesture) return;
-    final until = _ignoreScrollUntil;
-    if (until != null && DateTime.now().isBefore(until)) return;
+
+    // Don't let a parent page move while this carousel is already scrubbing.
+    if (_isDragging || _signalGesture) {
+      _consumePointerSignal(event);
+      return;
+    }
+
+    final nestedVertical = _nestedInVerticalScrollable;
+    final horizontalDominant =
+        event.scrollDelta.dx.abs() >= event.scrollDelta.dy.abs();
+    // Inside a vertical ListView, a normal mouse wheel should scroll the page.
+    // Only a horizontal wheel / shift-wheel / sideways trackpad claims the
+    // carousel, so the two axes no longer fight.
+    if (nestedVertical && !horizontalDominant) return;
 
     GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
       if (!mounted) return;
       if (resolved is! PointerScrollEvent) return;
+      resolved.respond(allowPlatformDefault: false);
       _handlePointerScroll(resolved);
     });
   }
@@ -1254,38 +1259,11 @@ class _StackedCarouselState extends State<StackedCarousel>
     );
   }
 
-  void _onPanZoomStart(PointerPanZoomStartEvent event) {
-    if (!widget.dragEnabled || widget.items.length <= 1) return;
-    if (_activePointer != null && !_signalGesture) return;
-    _scrollEndTimer?.cancel();
-    _activePointer = event.pointer;
-    _signalGesture = true;
-    _signalPosition = event.position;
-    _velocityTracker = VelocityTracker.withKind(PointerDeviceKind.trackpad)
-      ..addPosition(event.timeStamp, event.position);
-    _onDragStart(DragStartDetails(
-      globalPosition: event.position,
-      localPosition: event.localPosition,
-    ));
-  }
-
-  void _onPanZoomUpdate(PointerPanZoomUpdateEvent event) {
-    if (!_signalGesture) return;
-    if (_activePointer != null && event.pointer != _activePointer) return;
-    _applySignalDx(event.panDelta.dx, event.position, event.timeStamp);
-  }
-
-  void _onPanZoomEnd(PointerPanZoomEndEvent event) {
-    if (!_signalGesture) return;
-    if (_activePointer != null && event.pointer != _activePointer) return;
-    _activePointer = null;
-    _finishSignalGesture();
-    _ignoreScrollUntil = DateTime.now().add(const Duration(milliseconds: 80));
-  }
-
   void _onDragStart(DragStartDetails _) {
     if (!widget.dragEnabled || widget.items.length <= 1) return;
     if (_isDragging) return;
+    _scrollEndTimer?.cancel();
+    _scrollEndTimer = null;
     _swipeStartReported = false;
     _pauseAutoPlayForInteraction();
 
@@ -1529,50 +1507,45 @@ class _StackedCarouselState extends State<StackedCarousel>
           height: cardHeight + (widget.peekOffsetY * peekCount) + 16,
           child: Listener(
             behavior: HitTestBehavior.opaque,
-            onPointerDown: _onPointerDown,
-            onPointerMove: _onPointerMove,
-            onPointerUp: _onPointerUp,
-            onPointerCancel: _onPointerCancel,
             onPointerSignal: _onPointerSignal,
-            onPointerPanZoomStart: _onPanZoomStart,
-            onPointerPanZoomUpdate: _onPanZoomUpdate,
-            onPointerPanZoomEnd: _onPanZoomEnd,
-            child: ValueListenableBuilder<int>(
-              valueListenable: _layersTick,
-              builder: (context, _, __) {
-                return Stack(
-                  alignment: stackAlignment,
-                  clipBehavior: Clip.none,
-                  children: [
-                    ..._buildCardLayers(
-                      cardWidth,
-                      cardHeight,
-                      _dirFactor,
-                      constraints.maxWidth,
-                    ),
-                    // Built-in dot indicator (can be disabled in favour of indicatorBuilder).
-                    if (widget.isDotIndicatorEnabled)
-                      Positioned(
-                        bottom: 0,
-                        child: _DotsIndicator(
-                          count: widget.items.length,
-                          current: _currentIndex,
-                          activeColor: widget.dotIndicatorActiveColor,
-                          inactiveColor: widget.dotIndicatorInactiveColor,
-                          dotSize: widget.dotIndicatorSize,
-                          dotSpacing: widget.dotIndicatorSpacing,
+            child: RawGestureDetector(
+              behavior: HitTestBehavior.opaque,
+              gestures: _carouselGestures,
+              child: ValueListenableBuilder<int>(
+                valueListenable: _layersTick,
+                builder: (context, _, __) {
+                  return Stack(
+                    alignment: stackAlignment,
+                    clipBehavior: Clip.none,
+                    children: [
+                      ..._buildCardLayers(
+                        cardWidth,
+                        cardHeight,
+                        _dirFactor,
+                        constraints.maxWidth,
+                      ),
+                      if (widget.isDotIndicatorEnabled)
+                        Positioned(
+                          bottom: 0,
+                          child: _DotsIndicator(
+                            count: widget.items.length,
+                            current: _currentIndex,
+                            activeColor: widget.dotIndicatorActiveColor,
+                            inactiveColor: widget.dotIndicatorInactiveColor,
+                            dotSize: widget.dotIndicatorSize,
+                            dotSpacing: widget.dotIndicatorSpacing,
+                          ),
                         ),
-                      ),
-                    // Custom indicator overrides the built-in one.
-                    if (widget.indicatorBuilder != null)
-                      Positioned(
-                        bottom: 0,
-                        child: widget.indicatorBuilder!(
-                            widget.items.length, _currentIndex),
-                      ),
-                  ],
-                );
-              },
+                      if (widget.indicatorBuilder != null)
+                        Positioned(
+                          bottom: 0,
+                          child: widget.indicatorBuilder!(
+                              widget.items.length, _currentIndex),
+                        ),
+                    ],
+                  );
+                },
+              ),
             ),
           ),
         );

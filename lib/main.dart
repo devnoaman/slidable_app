@@ -113,7 +113,7 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                     peekTiltAngle: 0.10,
                     reverseSwipeDirection: false,
                     reverseOnBack: false,
-                    visibleCount: 2,
+                    visibleCount: 3,
                     flyCurve: Curves.easeOutCubic,
                     dotIndicatorActiveColor: Colors.red,
                     dotIndicatorInactiveColor: Colors.white,
@@ -181,8 +181,9 @@ class _CarouselDemoPageState extends State<CarouselDemoPage> {
                                 setState(() => _flyDirection = direction),
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 200),
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
                               alignment: Alignment.center,
                               decoration: BoxDecoration(
                                 color: selected
