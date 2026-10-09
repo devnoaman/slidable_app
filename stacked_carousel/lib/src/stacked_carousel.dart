@@ -855,11 +855,12 @@ class _StackedCarouselState extends State<StackedCarousel>
       return [tappable(_CardShell(child: widget.items[0]), 0)];
     }
 
-    // Peek slots only exist for real items. When [loop] is off, do not wrap
-    // to the first card after the last one.
-    final int peekCount =
-        (widget.visibleCount - 1).clamp(1, widget.visibleCount - 1);
+    // Peek slots only exist for real neighbours. Never exceed n-1 or a
+    // looping extra slot wraps onto a card already in the stack (duplicate
+    // keys when visibleCount >= item count, e.g. 3 cards / 3 visible).
+    final int peekCount = (widget.visibleCount - 1).clamp(1, n - 1);
     final List<Widget> layers = [];
+    final usedIndexes = <int>{};
 
     /// Places a card in stack space with [offsetX]/[offsetY] so hit-testing
     /// matches the visible peek strip. [Transform.translate] keeps its layout
@@ -919,9 +920,9 @@ class _StackedCarouselState extends State<StackedCarousel>
 
       for (int k = maxK; k >= 1; k--) {
         final int? idx = _indexAtOffset(k);
-        if (idx == null) continue;
-        // Skip a wrapped extra slot that would duplicate the front card.
-        if (widget.loop && k > peekCount && idx == _currentIndex) continue;
+        if (idx == null || idx == _currentIndex || !usedIndexes.add(idx)) {
+          continue;
+        }
         // Cache the card widget — passed as [child] so it isn't rebuilt each frame.
         final Widget cachedCard = tappable(
           _CardShell(
@@ -991,10 +992,12 @@ class _StackedCarouselState extends State<StackedCarousel>
         ),
       );
     } else {
-      // Reverse animation
+      // Reverse animation. Incoming previous card is also mounted; skip any
+      // peek that wrapping would map onto that same item.
+      usedIndexes.add(_nextIndex);
       for (int k = peekCount; k >= 0; k--) {
         final int? idx = _indexAtOffset(k);
-        if (idx == null) continue;
+        if (idx == null || !usedIndexes.add(idx)) continue;
         final Widget cachedCard = tappable(
           _CardShell(
             child: widget.items[idx],
@@ -1006,6 +1009,7 @@ class _StackedCarouselState extends State<StackedCarousel>
         );
         layers.add(
           AnimatedBuilder(
+            key: ValueKey('card-$idx'),
             animation: _flyController,
             builder: (context, child) {
               final curveT = _flyController.value;
@@ -1033,6 +1037,7 @@ class _StackedCarouselState extends State<StackedCarousel>
       );
       layers.add(
         AnimatedBuilder(
+          key: ValueKey('card-$_nextIndex'),
           animation: _riseController,
           builder: (context, child) {
             if (_goingBackward) {

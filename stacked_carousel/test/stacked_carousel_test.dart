@@ -645,4 +645,83 @@ void main() {
     expect(ctrl.currentIndex, 1);
     expect(scrollCtrl.offset, 0);
   });
+
+  testWidgets(
+      'three looping cards with visibleCount 3 do not throw duplicate keys',
+      (tester) async {
+    final ctrl = StackedCarouselController();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                controller: ctrl,
+                autoPlay: false,
+                loop: true,
+                reverseOnBack: false,
+                visibleCount: 3,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+
+    ctrl.previous();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(ctrl.currentIndex, 2);
+  });
+
+  testWidgets(
+      'autoPlayDirection.start with three visible cards does not throw duplicate keys',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 400,
+              height: 480,
+              child: StackedCarousel(
+                autoPlay: true,
+                autoPlayDirection: AutoPlayDirection.start,
+                autoPlayInterval: const Duration(milliseconds: 200),
+                animationDuration: const Duration(milliseconds: 80),
+                loop: true,
+                reverseOnBack: false,
+                visibleCount: 3,
+                cardHeight: 400,
+                cardWidthFactor: 1,
+                items: const [
+                  SizedBox(key: Key('c0'), width: 400, height: 400),
+                  SizedBox(key: Key('c1'), width: 400, height: 400),
+                  SizedBox(key: Key('c2'), width: 400, height: 400),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(tester.takeException(), isNull);
+  });
 }
